@@ -2,6 +2,8 @@
 
 Preference-directed particle simulation exploring emergent complex dynamics from simple interaction rules. Particles have preference vectors that determine attraction/repulsion patterns — the interplay between movement, neighbor topology, and preference evolution gives rise to rich self-organizing behavior.
 
+![Example Society](ExampleSociety.png)
+
 Must run from **Terminal.app** on macOS for hardware GPU acceleration (VS Code terminal may fall back to software renderer).
 
 ## Quick Start (experimental branch)
