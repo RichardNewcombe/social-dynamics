@@ -62,15 +62,15 @@ pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 - **Signal/Response split** — separate broadcast identity from reaction weights
 - **Social learning** — positive (conformity) or negative (differentiation)
 - **Quiet-dim differentiation** — differentiate along dynamically inactive dimensions
-- **Spatial memory field** — persistent grid that modulates preferences based on interaction history ([writeup](spatial_memory.pdf))
+- **Spatial memory field** — persistent grid that modulates preferences based on interaction history ([writeup](docs/spatial_memory.pdf))
 - **Force landscape** — visualize the force field across space with temporal variance
 - **Shadow simulation** — run a perturbed copy to measure chaotic sensitivity
 - **Precision controls** — position/preference dtype (f16/f32/f64), mantissa bit truncation, discrete quantization
 
 ## Documentation
 
-- **[Simulator Overview (PDF)](simulator_overview.pdf)** — comprehensive mathematical description of all models: core dynamics with worked example, best neighbor modes, signal/response split, social learning, spatial memory, grid field approximations, force landscape, shadow simulation, and precision controls
-- **[Spatial Memory Field (PDF)](spatial_memory.pdf)** — detailed analysis of the memory field mechanism, parameter regimes, fixed points, and diffusion length
+- **[Simulator Overview (PDF)](docs/simulator_overview.pdf)** — comprehensive mathematical description of all models: core dynamics with worked example, best neighbor modes, signal/response split, social learning, spatial memory, grid field approximations, force landscape, shadow simulation, and precision controls
+- **[Spatial Memory Field (PDF)](docs/spatial_memory.pdf)** — detailed analysis of the memory field mechanism, parameter regimes, fixed points, and diffusion length
 
 ## Modules
 
