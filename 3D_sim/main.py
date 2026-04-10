@@ -216,24 +216,21 @@ def main():
     vbo_box = ctx.buffer(box_edges.tobytes())
     vao_box = ctx.vertex_array(prog_box, [(vbo_box, '3f', 'in_pos')])
 
-    # ── Coordinate axes (RGB = XYZ, from origin) ──
-    axis_len = 0.3
-    axis_verts = np.array([
-        # X axis (red)
-        0, 0, 0,  axis_len, 0, 0,
-        # Y axis (green)
-        0, 0, 0,  0, axis_len, 0,
-        # Z axis (blue)
-        0, 0, 0,  0, 0, axis_len,
-    ], dtype='f4')
-    vbo_axes = ctx.buffer(axis_verts.tobytes())
-    vao_axes = ctx.vertex_array(prog_line, [(vbo_axes, '3f', 'in_pos')])
-
-    # ── Line shader (3D MVP for neighbor lines) ──
+    # ── Line shader (3D MVP for neighbor lines + axes) ──
     prog_line = ctx.program(vertex_shader=LINE_VERT, fragment_shader=LINE_FRAG)
     n_max_edges = params['num_particles'] * params['n_neighbors']
     vbo_line = ctx.buffer(reserve=n_max_edges * 2 * 3 * 4)
     vao_line = ctx.vertex_array(prog_line, [(vbo_line, '3f', 'in_pos')])
+
+    # ── Coordinate axes (RGB = XYZ, from origin) ──
+    axis_len = 0.3
+    axis_verts = np.array([
+        0, 0, 0,  axis_len, 0, 0,
+        0, 0, 0,  0, axis_len, 0,
+        0, 0, 0,  0, 0, axis_len,
+    ], dtype='f4')
+    vbo_axes = ctx.buffer(axis_verts.tobytes())
+    vao_axes = ctx.vertex_array(prog_line, [(vbo_axes, '3f', 'in_pos')])
 
     # ── Overlay shader (2D divider line) ──
     prog_overlay = ctx.program(vertex_shader=OVERLAY_VERT,
