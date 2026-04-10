@@ -1,12 +1,12 @@
-# Social Dynamics — 2D Particle Simulation
+# Social Dynamics — Particle Simulation
 
 Preference-directed particle simulation exploring emergent complex dynamics from simple interaction rules. Particles have preference vectors that determine attraction/repulsion patterns — the interplay between movement, neighbor topology, and preference evolution gives rise to rich self-organizing behavior.
 
 ![Example Society](ExampleSociety.png)
 
-Must run from **Terminal.app** on macOS for hardware GPU acceleration (VS Code terminal may fall back to software renderer).
+## Quick Start
 
-## Quick Start (experimental branch)
+Must run from **Terminal.app** on macOS for hardware GPU acceleration.
 
 ```bash
 cd gpu
@@ -19,7 +19,7 @@ python3 -m sim_2d_exp
 pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 ```
 
-### Controls
+## Controls
 
 | Key | Action |
 |-----|--------|
@@ -32,7 +32,7 @@ pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 | +/- | Adjust social learning rate |
 | Cmd+Drag | Select particles for causal tracking |
 
-### Right Panel Views
+## Right Panel Views
 
 - **Trails** — temporal trail accumulation of particle positions
 - **Velocity** — HSV velocity field (hue=direction, brightness=speed)
@@ -40,12 +40,13 @@ pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 - **Pref2D** — preference space scatter plot (dim0 vs dim1)
 - **Pref3D** — isometric projection of 3D preference space (120° axes)
 - **MaxGrid** — per-dimension max preference grid visualization
-- **Force** — force landscape with 3 sub-modes:
+- **Force** — force landscape (with variance toggle):
   - Max Pref (RGB) — strongest signal per dimension
   - Optimal Pref (RGB) — which preference vector maximizes force
   - Direction (HSV) — direction of maximum movement
+- **Memory** — spatial memory field visualization (RGB per dimension)
 
-### Physics Engines
+## Physics Engines
 
 | Engine | Method | Scaling | Best for |
 |--------|--------|---------|----------|
@@ -56,25 +57,30 @@ pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 | Grid Max CPU | Max-pool + position tracking | O(N + G²·P) | Large N, discrete dynamics |
 | Grid Max GPU | Fused max_pool2d (MPS/CUDA) | O(N + G²) | Large N + GPU |
 
-### Key Features
+## Key Features
 
 - **Signal/Response split** — separate broadcast identity from reaction weights
 - **Social learning** — positive (conformity) or negative (differentiation)
 - **Quiet-dim differentiation** — differentiate along dynamically inactive dimensions
-- **Force landscape** — visualize the force field across space
+- **Spatial memory field** — persistent grid that modulates preferences based on interaction history ([writeup](spatial_memory.pdf))
+- **Force landscape** — visualize the force field across space with temporal variance
 - **Shadow simulation** — run a perturbed copy to measure chaotic sensitivity
-- **Precision controls** — truncate position/preference mantissa bits, quantize to discrete levels
+- **Precision controls** — position/preference dtype (f16/f32/f64), mantissa bit truncation, discrete quantization
 
-## Other Modules
+## Documentation
+
+- **[Spatial Memory Field](spatial_memory.pdf)** — mathematical description of the memory field mechanism, parameters, expected behaviors, and analysis
+
+## Modules
+
+| Directory | Description |
+|-----------|-------------|
+| `sim_2d_exp/` | Main experimental simulation (2D) |
+| `sim_2d_cuda/` | CUDA-optimized variant for Windows/NVIDIA |
+| `3D_sim/` | 3D particle simulation |
 
 ```bash
-python3 -m sim_2d        # base refactored simulation
-python3 -m sim_2d_cuda   # CUDA-optimized variant (Windows/NVIDIA)
-python3 particle_net_viz.py  # ParticleNet interactive visualizer
-```
-
-## Legacy (original monolithic version)
-
-```bash
-python3 sim_gpu_compute.py
+python3 -m sim_2d_exp    # main experiment
+python3 -m sim_2d_cuda   # CUDA variant
+python3 -m 3D_sim        # 3D simulation
 ```

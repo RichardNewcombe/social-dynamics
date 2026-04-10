@@ -23,3 +23,10 @@ NOTES.md
 requirements.txt
 simulator_writeup.*
 timelapse/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.synctex.gz
+x.log
