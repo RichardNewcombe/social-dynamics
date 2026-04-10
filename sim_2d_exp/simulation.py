@@ -85,6 +85,10 @@ class Simulation:
         self.tracked = np.zeros(n, dtype=bool)
         self.tracked_seed = np.zeros(n, dtype=bool)
 
+        # Spatial memory field: (G, G, K)
+        G = params['grid_res']
+        self.memory_field = np.zeros((G, G, k), dtype=np.float64)
+
     # ── Initialisation helpers ──────────────────────────────────────
 
     def _init_positions(self, dist):
@@ -361,6 +365,29 @@ class Simulation:
 
     def step(self, reuse_neighbors=False):
         """Run one simulation step (neighbor find + physics + post-processing)."""
+        # ── Memory field: read (modulate preferences before physics) ──
+        prefs_backup = None
+        resp_backup = None
+        modulated_prefs_pre = None
+        modulated_resp_pre = None
+        if params['memory_field']:
+            prefs_backup = self.prefs.copy()
+            strength = params['memory_strength']
+            G = self.memory_field.shape[0]
+            inv_cell = G / SPACE
+            cx = (self.pos[:, 0] * inv_cell).astype(int) % G
+            cy = (self.pos[:, 1] * inv_cell).astype(int) % G
+            field_at_particle = self.memory_field[cy, cx]  # (N, K)
+            # Multiplicative gate: amplify/dampen preferences
+            self.prefs = (self.prefs * (1.0 + strength * field_at_particle)
+                          ).clip(-1, 1).astype(self._pref_dtype)
+            modulated_prefs_pre = self.prefs.copy()  # save for delta computation
+            if params['use_signal_response']:
+                resp_backup = self.response.copy()
+                self.response = (self.response * (1.0 + strength * field_at_particle)
+                                 ).clip(-1, 1).astype(self._pref_dtype)
+                modulated_resp_pre = self.response.copy()
+
         # Swap arrays so physics sees response-as-signal and vice versa
         swapped = params['use_signal_response'] and params['swap_signal_response']
         if swapped:
@@ -368,6 +395,46 @@ class Simulation:
         self._step_impl(reuse_neighbors)
         if swapped:
             self.prefs, self.response = self.response, self.prefs
+
+        # ── Memory field: capture social delta, restore, write, decay ──
+        if params['memory_field'] and prefs_backup is not None:
+            # Delta = kernel output - pre-physics modulated input
+            # This isolates what the kernel's social learning changed
+            social_delta = self.prefs.astype(np.float64) - modulated_prefs_pre.astype(np.float64)
+
+            # Restore original prefs + apply only the social delta
+            self.prefs = np.clip(
+                prefs_backup.astype(np.float64) + social_delta, -1, 1
+            ).astype(self._pref_dtype)
+
+            if resp_backup is not None:
+                resp_delta = self.response.astype(np.float64) - modulated_resp_pre.astype(np.float64)
+                self.response = np.clip(
+                    resp_backup.astype(np.float64) + resp_delta, -1, 1
+                ).astype(self._pref_dtype)
+
+            # Write: deposit particle preferences into the field
+            write_rate = params['memory_write_rate']
+            G = self.memory_field.shape[0]
+            inv_cell = G / SPACE
+            cx = (self.pos[:, 0] * inv_cell).astype(int) % G
+            cy = (self.pos[:, 1] * inv_cell).astype(int) % G
+            # Accumulate preferences into grid cells
+            k = self.k
+            for d in range(k):
+                np.add.at(self.memory_field[:, :, d], (cy, cx),
+                          write_rate * self.prefs[:, d].astype(np.float64))
+
+            # Decay
+            self.memory_field *= params['memory_decay']
+
+            # Blur (diffuse the field spatially)
+            if params['memory_blur'] and params['memory_blur_sigma'] > 0:
+                from scipy.ndimage import gaussian_filter
+                for d in range(k):
+                    self.memory_field[:, :, d] = gaussian_filter(
+                        self.memory_field[:, :, d],
+                        sigma=params['memory_blur_sigma'], mode='wrap')
         if params['social_mode'] == 1 and params['social'] != 0:
             self._quiet_dim_social()
         # Response social learning (same rate as signal, applied post-step)

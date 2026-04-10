@@ -1,0 +1,256 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{Spatial Memory Field}
+\author{Social Dynamics Simulation}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Notation}
+
+\begin{tabular}{ll}
+\toprule
+\textbf{Symbol} & \textbf{Definition} \\
+\midrule
+$N$ & Number of particles \\
+$K$ & Number of preference dimensions per particle \\
+$G$ & Grid resolution ($G \times G$ cells covering the domain) \\
+$L$ & Domain size (toroidal, default $L = 1.0$) \\
+$i$ & Particle index, $i \in \{1, \ldots, N\}$ \\
+$d$ & Preference dimension index, $d \in \{1, \ldots, K\}$ \\
+$\mathbf{x}_i \in [0, L)^2$ & Position of particle $i$ \\
+$\mathbf{p}_i \in [-1, 1]^K$ & Preference (signal) vector of particle $i$ \\
+$\tilde{\mathbf{p}}_i$ & Effective preference after field modulation \\
+$M(c, d)$ & Memory field value at grid cell $c$, dimension $d$ \\
+$\mathrm{cell}(\mathbf{x})$ & Grid cell containing position $\mathbf{x}$: $\left(\lfloor \mathbf{x} \cdot G/L \rfloor\right) \bmod G$ \\
+$\alpha$ & Field strength (how strongly the field modulates preferences) \\
+$\beta$ & Write rate (how fast particles deposit into the field) \\
+$\gamma$ & Decay factor per step ($0 < \gamma \leq 1$) \\
+$\sigma$ & Gaussian blur standard deviation (in grid cells) \\
+$s$ & Social learning rate (positive = conformity, negative = differentiation) \\
+\bottomrule
+\end{tabular}
+
+\section{Overview}
+
+A persistent grid field $M(\mathbf{x}, d)$ of shape $(G \times G \times K)$ creates a feedback loop between particle dynamics and the environment. Particles both \textbf{read} from and \textbf{write} to the field as they move through space, allowing the system to develop location-dependent behavioral biases based on interaction history.
+
+\section{Mechanism}
+
+\subsection{Step 1: Read (before physics)}
+
+Each particle $i$'s preferences are modulated by the field at its grid cell:
+\begin{equation}
+\tilde{p}_i^{(d)} = p_i^{(d)} \cdot \left(1 + \alpha \cdot M\!\left(\mathrm{cell}(\mathbf{x}_i),\, d\right)\right)
+\end{equation}
+
+where:
+\begin{itemize}[nosep]
+\item $p_i^{(d)}$ is particle $i$'s preference in dimension $d$
+\item $\tilde{p}_i^{(d)}$ is the effective (modulated) preference used for physics
+\item $\alpha$ is the \textbf{field strength} parameter
+\item $M\!\left(\mathrm{cell}(\mathbf{x}_i), d\right)$ is the memory field value at particle $i$'s grid cell
+\end{itemize}
+
+The modulated preferences are clipped to $[-1, 1]$.
+
+\textbf{Effect}: Positive field values amplify the matching preference dimension. Negative values dampen it. A region where $M(\mathbf{x}, 0) > 0$ will cause particles with $p^{(0)} > 0$ to have stronger attraction in dimension~0, while particles with $p^{(0)} < 0$ will have weaker (dampened) repulsion.
+
+\subsection{Step 2: Physics}
+
+The simulation runs normally using the modulated preferences $\tilde{\mathbf{p}}_i$ for neighbor selection and compatibility weighting. The original (unmodulated) preferences $\mathbf{p}_i$ are preserved.
+
+Any social learning delta $\Delta \mathbf{p}$ from the physics kernel is captured and applied to the \textbf{original} preferences:
+\begin{equation}
+\mathbf{p}_i \leftarrow \mathrm{clip}\!\left(\mathbf{p}_i + \Delta \mathbf{p},\; -1,\; 1\right)
+\end{equation}
+
+This ensures the field only affects interaction forces, not the stored identity of the particles.
+
+\subsection{Step 3: Write (after physics)}
+
+Each particle $i$ deposits its raw preferences into the field at its \textbf{new} position:
+\begin{equation}
+M\!\left(\mathrm{cell}(\mathbf{x}_i),\, d\right) \;\leftarrow\; M\!\left(\mathrm{cell}(\mathbf{x}_i),\, d\right) + \beta \cdot p_i^{(d)}
+\end{equation}
+
+where $\beta$ is the \textbf{write rate}. Multiple particles in the same cell accumulate additively.
+
+\subsection{Step 4: Decay}
+
+The entire field decays exponentially:
+\begin{equation}
+M \leftarrow \gamma \cdot M
+\end{equation}
+
+where $\gamma$ is the \textbf{decay} parameter. The half-life in steps is:
+\begin{equation}
+t_{1/2} = \frac{\ln 2}{\ln(1/\gamma)}
+\end{equation}
+
+\subsection{Step 5: Blur (optional)}
+
+A Gaussian blur with standard deviation $\sigma$ (in grid cells) is applied to each dimension independently, with periodic boundary wrapping:
+\begin{equation}
+M^{(d)} \leftarrow M^{(d)} * \mathcal{G}(\sigma)
+\end{equation}
+
+This diffuses the memory spatially, causing particle traces to spread into neighboring cells.
+
+\section{Parameters}
+
+\begin{tabular}{lcccp{6cm}}
+\toprule
+\textbf{Parameter} & \textbf{Symbol} & \textbf{Range} & \textbf{Default} & \textbf{Description} \\
+\midrule
+Write Rate & $\beta$ & $[0, 1]$ & 0.01 & Deposition rate per particle per step \\
+Field Strength & $\alpha$ & $[0, 5]$ & 0.5 & Modulation strength on preferences \\
+Field Decay & $\gamma$ & $[0.9, 1]$ & 0.999 & Exponential decay per step \\
+Blur Sigma & $\sigma$ & $[0.1, 10]$ & 1.0 & Gaussian diffusion radius (grid cells) \\
+\bottomrule
+\end{tabular}
+
+\subsection{Decay half-lives}
+
+\begin{tabular}{crl}
+\toprule
+$\gamma$ & \textbf{Half-life (steps)} & \textbf{Character} \\
+\midrule
+0.99 & 69 & Short-term memory \\
+0.995 & 139 & Medium-term \\
+0.999 & 693 & Long-term memory \\
+0.9999 & 6931 & Near-permanent \\
+1.0 & $\infty$ & Permanent (grows without bound) \\
+\bottomrule
+\end{tabular}
+
+\section{Expected Behaviors}
+
+\subsection{Regime 1: Faint trails (low $\beta$, low $\alpha$)}
+
+Particles leave barely perceptible traces. The Memory view shows thin paths where particles have traveled. Minimal feedback on dynamics---the system behaves almost identically to no memory.
+
+\textbf{Settings}: $\beta = 0.001$, $\alpha = 0.1$, $\gamma = 0.999$, blur off.
+
+\subsection{Regime 2: Territory formation (high $\beta$, high $\alpha$, no blur)}
+
+Rapid spatial polarization. The first particles to visit a region ``claim'' it:
+\begin{enumerate}[nosep]
+\item Particle with $p^{(0)} = +1$ passes through cell $(\mathbf{x})$
+\item Field accumulates $M(\mathbf{x}, 0) > 0$
+\item Future particles at $\mathbf{x}$ get $\tilde{p}^{(0)}$ amplified if positive, dampened if negative
+\item Positive-$p^{(0)}$ particles are attracted more strongly $\rightarrow$ they stay $\rightarrow$ more deposition
+\end{enumerate}
+
+This positive feedback creates sharp boundaries between regions of different preference types.
+
+\textbf{Settings}: $\beta = 0.05$, $\alpha = 1.0$, $\gamma = 0.999$, blur off.
+
+\subsection{Regime 3: Pheromone landscapes (medium $\beta$, medium $\alpha$, with blur)}
+
+Smooth preference gradients emerge instead of sharp territories. The blur diffuses deposits into broad regional biases. Particles drift along these gradients, reinforcing them.
+
+This is closest to \textbf{ant colony pheromone dynamics}---particles leave chemical-like traces that guide future behavior, with spatial diffusion and temporal decay.
+
+\textbf{Settings}: $\beta = 0.01$, $\alpha = 0.5$, $\gamma = 0.999$, blur on, $\sigma = 2.0$.
+
+\subsection{Regime 4: Memory + differentiation (high $\alpha$ + negative social)}
+
+The most interesting regime. \textbf{Social learning} ($s < 0$) pushes particles to differentiate from their neighbors, while the \textbf{memory field} pushes them to conform to local history.
+
+\begin{itemize}[nosep]
+\item Social force: ``be different from who's near you now''
+\item Memory force: ``be similar to who was here before''
+\end{itemize}
+
+The tension between these opposing pressures can create:
+\begin{itemize}[nosep]
+\item \textbf{Oscillations}: particles differentiate, leave, field decays, new particles arrive and conform to old memory, then differentiate again
+\item \textbf{Traveling waves}: regions of preference bias propagate as particles carry information
+\item \textbf{Persistent structures}: stable spatial patterns where the field and particle distribution reach equilibrium
+\end{itemize}
+
+\textbf{Settings}: $\beta = 0.01$, $\alpha = 1.0$, $\gamma = 0.999$, $s = -0.003$, blur on, $\sigma = 1.0$.
+
+\subsection{Regime 5: Colony ghosts (high $\alpha$, medium $\gamma$)}
+
+When particles cluster and deposit strongly, the field at those cells grows, amplifying preferences, increasing attraction, tightening the cluster. This is a \textbf{positive feedback loop} that creates stable ``colonies.''
+
+If the cluster eventually disperses (due to repulsion or social differentiation), the field retains a ``ghost'' of the colony---a region of strong field values with no particles. This ghost can:
+\begin{itemize}[nosep]
+\item Attract future particles of the same type back to the abandoned site
+\item Create ``territorial memory'' that persists after the original occupants leave
+\item Generate cyclic colonization--abandonment patterns
+\end{itemize}
+
+\textbf{Settings}: $\beta = 0.02$, $\alpha = 1.5$, $\gamma = 0.998$, blur on, $\sigma = 1.0$.
+
+\section{Visualization}
+
+The \textbf{Memory} right-panel view shows $M(\mathbf{x}, d)$ as RGB:
+\begin{itemize}[nosep]
+\item Red channel: $M(\mathbf{x}, 0)$
+\item Green channel: $M(\mathbf{x}, 1)$
+\item Blue channel: $M(\mathbf{x}, 2)$
+\end{itemize}
+
+Each channel is independently normalized by its maximum absolute value, mapped from $[-|M|_{\max}, +|M|_{\max}]$ to $[0, 1]$:
+\begin{itemize}[nosep]
+\item Gray (0.5, 0.5, 0.5) = neutral (no memory)
+\item Bright color = strong positive field in that dimension
+\item Dark color = strong negative field
+\item White = all dimensions strongly positive
+\end{itemize}
+
+\section{Mathematical Properties}
+
+\subsection{Fixed point analysis}
+
+At steady state ($\dot{M} = 0$), balancing deposition against decay gives:
+\begin{equation}
+M^* = \frac{\beta}{1 - \gamma} \cdot \langle p \rangle_{\mathrm{local}}
+\end{equation}
+
+where $\langle p \rangle_{\mathrm{local}}$ is the time-averaged preference of particles passing through each cell. For $\gamma = 0.999$ and $\beta = 0.01$:
+\begin{equation}
+M^* \approx \frac{0.01}{0.001} \cdot \langle p \rangle_{\mathrm{local}} = 10 \cdot \langle p \rangle_{\mathrm{local}}
+\end{equation}
+
+So the steady-state field is approximately $10\times$ the local average preference.
+
+\subsection{Feedback gain}
+
+The effective feedback gain is $\alpha \cdot |M^*|$. For the modulation to be significant but not overwhelming:
+\begin{equation}
+\alpha \cdot |M^*| \sim \mathcal{O}(1)
+\end{equation}
+
+With $M^* \approx 10 \cdot \langle p \rangle$ and $|\langle p \rangle| \sim 0.5$:
+\begin{equation}
+\alpha \cdot 5 \sim 1 \quad\implies\quad \alpha \sim 0.2
+\end{equation}
+
+This suggests $\alpha \approx 0.2$ is the transition point between weak and strong feedback.
+
+\subsection{Diffusion length}
+
+With blur sigma $\sigma$ applied every step with decay $\gamma$, the effective diffusion length (how far a deposit spreads before decaying to $1/e$) is:
+\begin{equation}
+L_{\mathrm{diff}} = \sigma \cdot \sqrt{\frac{2}{1 - \gamma}} \cdot \frac{L}{G}
+\end{equation}
+
+For $\sigma = 2$, $\gamma = 0.999$, $G = 256$:
+\begin{equation}
+L_{\mathrm{diff}} \approx 2 \cdot \sqrt{2000} \cdot \frac{1}{256} \approx 0.35
+\end{equation}
+
+This means a deposit diffuses across about 35\% of the domain before decaying. Higher $\sigma$ or higher $\gamma$ extends this.
+
+\end{document}

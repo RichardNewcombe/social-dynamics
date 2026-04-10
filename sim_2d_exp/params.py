@@ -63,6 +63,13 @@ params = dict(
     perturb_pos_n_bits=1,    # number of LSBs to randomize (1-20)
     shadow_sim=False,        # run a perturbed shadow simulation for divergence tracking
     shadow_show_lines=True,  # draw lines between corresponding particles
+    # ── Spatial memory field ──
+    memory_field=False,      # enable persistent spatial memory
+    memory_write_rate=0.01,  # how fast particles deposit into the field
+    memory_strength=0.5,     # how strongly the field modulates preferences
+    memory_decay=0.999,      # field decay per step (1.0 = permanent)
+    memory_blur=False,       # apply Gaussian blur to field each step
+    memory_blur_sigma=1.0,   # blur sigma in grid cells
     quantize_pos=False,  # snap positions to grid_res x grid_res grid
     truncate_pos_bits=False,  # truncate position mantissa to N bits
     pos_mantissa_bits=52,     # number of mantissa bits to keep (10-52)

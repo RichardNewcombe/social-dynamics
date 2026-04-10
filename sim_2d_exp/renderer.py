@@ -340,6 +340,11 @@ def run():
     force_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
     force_tex_size = params['grid_res']
 
+    # Memory field texture
+    memory_tex = ctx.texture((params['grid_res'], params['grid_res']), 3, dtype='f2')
+    memory_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+    memory_tex_size = params['grid_res']
+
     # Force trail FBO (ping-pong pair for temporal averaging)
     force_trail_tex = ctx.texture((trail_w, trail_h), 3, dtype='f2')
     force_trail_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
@@ -979,14 +984,34 @@ def run():
                 grid_rgb[empty, d] = 0.0
             grid_debug_tex.write(grid_rgb.tobytes())
 
-        right_tex = (force_var_tex if params['force_show_variance'] else force_trail_tex) if rv == 6 else \
+        # Update memory field texture
+        if rv == 7 and sim.memory_field is not None:
+            G = sim.memory_field.shape[0]
+            if G != memory_tex_size:
+                memory_tex = ctx.texture((G, G), 3, dtype='f2')
+                memory_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+                memory_tex_size = G
+            # Map field to RGB: field values can be any range,
+            # normalize per-channel by max absolute value
+            field = sim.memory_field
+            k_vis = min(sim.k, 3)
+            mem_rgb = np.zeros((G, G, 3), dtype=np.float16)
+            for d in range(k_vis):
+                ch = field[:, :, d]
+                ch_max = max(abs(ch.max()), abs(ch.min()), 1e-12)
+                # Map [-ch_max, ch_max] to [0, 1]
+                mem_rgb[:, :, d] = ((ch / ch_max + 1.0) * 0.5).astype(np.float16)
+            memory_tex.write(mem_rgb.tobytes())
+
+        right_tex = memory_tex if rv == 7 else \
+                    (force_var_tex if params['force_show_variance'] else force_trail_tex) if rv == 6 else \
                     grid_debug_tex if rv == 5 else \
                     pref_trail_tex if rv in (3, 4) else \
                     vel_tex if rv == 1 else \
                     causal_tex if rv == 2 else trail_tex
         right_tex.use(0)
         prog_display['tex'] = 0
-        if rv in (3, 4, 5, 6):
+        if rv in (3, 4, 5, 6, 7):
             # Pref/grid views: no pan/zoom, always centered
             prog_display['view_center'] = (0.5, 0.5)
             prog_display['view_zoom'] = 1.0
@@ -1151,6 +1176,9 @@ def run():
         imgui.same_line()
         if imgui.radio_button("Force", params['right_view'] == 6):
             params['right_view'] = 6
+        imgui.same_line()
+        if imgui.radio_button("Memory", params['right_view'] == 7):
+            params['right_view'] = 7
         if params['right_view'] in (3, 4):
             changed, v = imgui.combo("Pref Colors", params['pref_color_mode'],
                                      PREF_COLOR_MODES)
@@ -1266,6 +1294,31 @@ def run():
             changed, v = imgui.checkbox("Unit Prefs", params['unit_prefs'])
             if changed:
                 params['unit_prefs'] = v
+            imgui.separator()
+            imgui.text("Spatial Memory")
+            changed, v = imgui.checkbox("Enable Memory Field", params['memory_field'])
+            if changed:
+                params['memory_field'] = v
+            if params['memory_field']:
+                changed, v = imgui.drag_float("Write Rate", params['memory_write_rate'], 0.001, 0.0, 1.0, "%.4f")
+                if changed:
+                    params['memory_write_rate'] = v
+                changed, v = imgui.drag_float("Field Strength", params['memory_strength'], 0.01, 0.0, 5.0, "%.3f")
+                if changed:
+                    params['memory_strength'] = v
+                changed, v = imgui.drag_float("Field Decay", params['memory_decay'], 0.001, 0.9, 1.0, "%.4f")
+                if changed:
+                    params['memory_decay'] = v
+                changed, v = imgui.checkbox("Blur Field", params['memory_blur'])
+                if changed:
+                    params['memory_blur'] = v
+                if params['memory_blur']:
+                    imgui.same_line()
+                    changed, v = imgui.drag_float("Sigma##mem", params['memory_blur_sigma'], 0.1, 0.1, 10.0, "%.1f")
+                    if changed:
+                        params['memory_blur_sigma'] = v
+                if imgui.button("Clear Field"):
+                    sim.memory_field[:] = 0.0
             imgui.separator()
             imgui.text("Signal / Response")
             changed, v = imgui.checkbox("Split Signal+Response",

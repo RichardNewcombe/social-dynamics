@@ -7,3 +7,19 @@ __pycache__/
 dist/
 build/
 .DS_Store
+imgui.ini
+
+# Legacy files (preserved in archive-all branch)
+sim_gpu*.py
+sim_2d/
+sim_2d_v1/
+sim_2d_v2/
+particle_net.py
+particle_net_viz.py
+particle_net_*.png
+gen_writeup.py
+test_gpu.py
+NOTES.md
+requirements.txt
+simulator_writeup.*
+timelapse/

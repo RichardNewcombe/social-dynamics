@@ -1,26 +1,29 @@
 """
-GLSL shaders for the 2D particle simulation (OpenGL 4.1 Core Profile).
+GLSL Shaders for 3D Particle Simulation
+========================================
+
+PARTICLE_VERT: 3D particle positions → MVP projection with perspective point size
+BOX_VERT: 3D wireframe cube via MVP
+OVERLAY_VERT: 2D overlay (divider line) — maps vec2 directly to NDC
+Screen-space shaders (QUAD_VERT, TRAIL_FRAG, SPLAT_FRAG, DISPLAY_FRAG) unchanged from 2D.
 """
 
-# ── Particle point rendering with toroidal wrap + pan/zoom ──
 PARTICLE_VERT = '''
 #version 410 core
-in vec2 in_pos;
+in vec3 in_pos;
 in vec3 in_color;
 out vec3 v_color;
+uniform mat4 mvp;
 uniform vec2 viewport_offset;
 uniform vec2 viewport_scale;
-uniform vec2 view_center;
-uniform float view_zoom;
 uniform float point_size;
 
 void main() {
-    vec2 p = in_pos - view_center;
-    p -= round(p);
-    vec2 ndc = p * view_zoom * 2.0;
+    vec4 clip = mvp * vec4(in_pos, 1.0);
+    vec2 ndc = clip.xy / clip.w;
     ndc = ndc * viewport_scale + (viewport_offset * 2.0 - 1.0 + viewport_scale);
-    gl_Position = vec4(ndc, 0.0, 1.0);
-    gl_PointSize = point_size;
+    gl_Position = vec4(ndc, clip.z / clip.w, 1.0);
+    gl_PointSize = point_size / clip.w;
     v_color = in_color;
 }
 '''
@@ -36,7 +39,6 @@ void main() {
 }
 '''
 
-# ── Full-screen quad (trail decay + display) ──
 QUAD_VERT = '''
 #version 410 core
 in vec2 in_pos;
@@ -59,7 +61,6 @@ void main() {
 }
 '''
 
-# ── Splat (additive soft circle) ──
 SPLAT_FRAG = '''
 #version 410 core
 in vec3 v_color;
@@ -73,7 +74,6 @@ void main() {
 }
 '''
 
-# ── Display trail texture with zoom/pan and HDR clamp ──
 DISPLAY_FRAG = '''
 #version 410 core
 in vec2 v_uv;
@@ -90,15 +90,12 @@ void main() {
 }
 '''
 
-# ── Box wireframe (sim-space) ──
 BOX_VERT = '''
 #version 410 core
-in vec2 in_pos;
-uniform vec2 view_center;
-uniform float view_zoom;
+in vec3 in_pos;
+uniform mat4 mvp;
 void main() {
-    vec2 ndc = (in_pos - view_center) * view_zoom * 2.0;
-    gl_Position = vec4(ndc, 0.0, 1.0);
+    gl_Position = mvp * vec4(in_pos, 1.0);
 }
 '''
 
@@ -110,8 +107,35 @@ void main() {
 }
 '''
 
-# ── Uniform-color lines (neighbors, radius circles, divider) ──
+LINE_VERT = '''
+#version 410 core
+in vec3 in_pos;
+uniform mat4 mvp;
+void main() {
+    gl_Position = mvp * vec4(in_pos, 1.0);
+}
+'''
+
 LINE_FRAG = '''
+#version 410 core
+out vec4 fragColor;
+uniform vec4 line_color;
+void main() {
+    fragColor = line_color;
+}
+'''
+
+# 2D overlay shader for the divider line (no MVP needed)
+OVERLAY_VERT = '''
+#version 410 core
+in vec2 in_pos;
+void main() {
+    vec2 ndc = in_pos * 2.0 - 1.0;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+}
+'''
+
+OVERLAY_FRAG = '''
 #version 410 core
 out vec4 fragColor;
 uniform vec4 line_color;
