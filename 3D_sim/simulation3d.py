@@ -65,6 +65,7 @@ params = dict(
     torch_precision=3,  # 0=f16, 1=bf16, 2=f32, 3=f64
     torch_device=0,
     flat_z=False,
+    show_axes=True,
 )
 
 auto_scale_ref = dict(

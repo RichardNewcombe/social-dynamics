@@ -216,6 +216,19 @@ def main():
     vbo_box = ctx.buffer(box_edges.tobytes())
     vao_box = ctx.vertex_array(prog_box, [(vbo_box, '3f', 'in_pos')])
 
+    # ── Coordinate axes (RGB = XYZ, from origin) ──
+    axis_len = 0.3
+    axis_verts = np.array([
+        # X axis (red)
+        0, 0, 0,  axis_len, 0, 0,
+        # Y axis (green)
+        0, 0, 0,  0, axis_len, 0,
+        # Z axis (blue)
+        0, 0, 0,  0, 0, axis_len,
+    ], dtype='f4')
+    vbo_axes = ctx.buffer(axis_verts.tobytes())
+    vao_axes = ctx.vertex_array(prog_line, [(vbo_axes, '3f', 'in_pos')])
+
     # ── Line shader (3D MVP for neighbor lines) ──
     prog_line = ctx.program(vertex_shader=LINE_VERT, fragment_shader=LINE_FRAG)
     n_max_edges = params['num_particles'] * params['n_neighbors']
@@ -508,6 +521,19 @@ def main():
             prog_box['mvp'].write(mvp_bytes)
             vao_box.render(moderngl.LINES, vertices=24)
 
+        # Coordinate axes
+        if params['show_axes']:
+            prog_line['mvp'].write(mvp_bytes)
+            # X axis (red)
+            prog_line['line_color'] = (1.0, 0.3, 0.3, 0.9)
+            vao_axes.render(moderngl.LINES, vertices=2, first=0)
+            # Y axis (green)
+            prog_line['line_color'] = (0.3, 1.0, 0.3, 0.9)
+            vao_axes.render(moderngl.LINES, vertices=2, first=2)
+            # Z axis (blue)
+            prog_line['line_color'] = (0.3, 0.3, 1.0, 0.9)
+            vao_axes.render(moderngl.LINES, vertices=2, first=4)
+
         ctx.disable(moderngl.DEPTH_TEST)
 
         # Right half: display selected view
@@ -520,12 +546,21 @@ def main():
         prog_display['view_zoom'] = 1.0
         vao_display.render(moderngl.TRIANGLE_STRIP)
 
-        if params['show_box']:
+        if params['show_box'] or params['show_axes']:
             ctx.viewport = (fb_w // 2, 0, fb_w // 2, fb_h)
             ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
             ctx.enable(moderngl.DEPTH_TEST)
-            prog_box['mvp'].write(mvp_bytes)
-            vao_box.render(moderngl.LINES, vertices=24)
+            if params['show_box']:
+                prog_box['mvp'].write(mvp_bytes)
+                vao_box.render(moderngl.LINES, vertices=24)
+            if params['show_axes']:
+                prog_line['mvp'].write(mvp_bytes)
+                prog_line['line_color'] = (1.0, 0.3, 0.3, 0.9)
+                vao_axes.render(moderngl.LINES, vertices=2, first=0)
+                prog_line['line_color'] = (0.3, 1.0, 0.3, 0.9)
+                vao_axes.render(moderngl.LINES, vertices=2, first=2)
+                prog_line['line_color'] = (0.3, 0.3, 1.0, 0.9)
+                vao_axes.render(moderngl.LINES, vertices=2, first=4)
             ctx.disable(moderngl.DEPTH_TEST)
 
         # ── Divider line (2D overlay) ──
@@ -597,6 +632,10 @@ def main():
         changed, v = imgui.checkbox("Box", params['show_box'])
         if changed:
             params['show_box'] = v
+        imgui.same_line()
+        changed, v = imgui.checkbox("Axes", params['show_axes'])
+        if changed:
+            params['show_axes'] = v
         imgui.same_line()
         if imgui.button("Reset Camera"):
             camera.reset()
