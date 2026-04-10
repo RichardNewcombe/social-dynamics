@@ -69,7 +69,8 @@ pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 
 ## Documentation
 
-- **[Spatial Memory Field](spatial_memory.pdf)** — mathematical description of the memory field mechanism, parameters, expected behaviors, and analysis
+- **[Simulator Overview (PDF)](simulator_overview.pdf)** — comprehensive mathematical description of all models: core dynamics with worked example, best neighbor modes, signal/response split, social learning, spatial memory, grid field approximations, force landscape, shadow simulation, and precision controls
+- **[Spatial Memory Field (PDF)](spatial_memory.pdf)** — detailed analysis of the memory field mechanism, parameter regimes, fixed points, and diffusion length
 
 ## Modules
 
