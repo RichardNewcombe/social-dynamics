@@ -47,7 +47,7 @@ params = dict(
     neighbor_mode=0,
     neighbor_radius=0.14,
     trail_decay=0.98,
-    point_size=3.0,
+    point_size=4.0,
     right_view=0,
     show_box=False,
     trail_zoom=True,
@@ -59,10 +59,10 @@ params = dict(
     auto_scale=False,
     reuse_neighbors=True,
     debug_knn=False,
-    knn_method=0,
+    knn_method=1,       # 0=Hash Grid, 1=cKDTree (f64)
     use_f64=True,
-    physics_engine=0,
-    torch_precision=2,
+    physics_engine=2,   # 0=Numba, 1=NumPy, 2=PyTorch
+    torch_precision=3,  # 0=f16, 1=bf16, 2=f32, 3=f64
     torch_device=0,
     flat_z=False,
 )
