@@ -446,7 +446,123 @@ def _exp3_factory(ctrl):
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════
+# ══# ═══════════════════════════════════════════════════════════════════
+# Experiment 4: Mountain Climbing with Roles
+# ═══════════════════════════════════════════════════════════════════
+
+def _exp4_factory(ctrl):
+    """Mountain Climbing with Heterogeneous Roles.
+
+    Org question: "How does team composition (researchers, leaders,
+    engineers) and social dynamics affect the ability to discover the
+    best strategy in a rugged landscape?"
+
+    A multi-peak fitness landscape is defined in preference space.
+    Each step, particles receive a noisy gradient nudge toward the
+    nearest uphill direction.  The noise simulates imperfect knowledge
+    — some people read the terrain better than others.
+
+    Key parameters:
+      - Social rate: conformity vs independence
+      - use_particle_roles: enable heterogeneous step/influence
+      - role_influence_std: leader heterogeneity
+      - role_step_scale_std: engineer heterogeneity
+      - Memory field: historical world knowledge
+    """
+    from experiments.landscape import make_default_landscape
+
+    _prev_prefs = [None]
+    _gradient_strength = [0.003]
+    _gradient_noise_std = [0.5]
+
+    def init(sim):
+        """Start particles near origin (far from global peak)."""
+        _prev_prefs[0] = None
+        noise = sim.rng.normal(0, 0.15, (sim.n, sim.k))
+        sim.prefs = np.clip(noise, -1, 1).astype(sim.prefs.dtype)
+        sim.response = sim.prefs.copy()
+        # Re-initialise roles if enabled
+        sim._init_roles()
+        if sim.memory_field is not None:
+            sim.memory_field[:] = 0.0
+        apply_post_processing(sim)
+
+    def post_step(sim, step):
+        """Apply noisy gradient nudge (researcher sensing)."""
+        landscape = make_default_landscape(k=sim.k)
+        grad_unit, fitness, peak_ids = landscape.gradient(sim.prefs)
+
+        # Per-particle noise
+        noise = sim.rng.normal(0, _gradient_noise_std[0], grad_unit.shape)
+        noisy_grad = grad_unit + noise
+        norms = np.linalg.norm(noisy_grad, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-12)
+        noisy_grad = noisy_grad / norms
+
+        nudge = _gradient_strength[0] * noisy_grad
+        sim.prefs = np.clip(
+            sim.prefs.astype(np.float64) + nudge, -1, 1
+        ).astype(sim.prefs.dtype)
+        apply_post_processing(sim)
+
+    def metrics(sim, step):
+        landscape = make_default_landscape(k=sim.k)
+        fitness, peak_ids = landscape.fitness(sim.prefs)
+
+        # Summit fraction
+        global_center = landscape.centers[0]
+        diff = sim.prefs.astype(np.float64) - global_center
+        dists_to_summit = np.linalg.norm(diff, axis=1)
+        summit_frac = float((dists_to_summit <= 0.35).sum() / len(sim.prefs))
+
+        # Local trap
+        local_trap = 0
+        for pid in range(1, landscape.n_peaks):
+            diff_l = sim.prefs.astype(np.float64) - landscape.centers[pid]
+            dists_l = np.linalg.norm(diff_l, axis=1)
+            local_trap += (dists_l <= 0.35).sum()
+        local_trap_frac = float(local_trap / len(sim.prefs))
+
+        # Clustering
+        cm = _cluster_metrics(sim.prefs)
+
+        # Exploration rate
+        exp_rate = _exploration_rate(sim.prefs, _prev_prefs[0])
+        _prev_prefs[0] = sim.prefs.copy()
+
+        # Role info
+        has_roles = params.get('use_particle_roles', False)
+        role_info = ''
+        if has_roles:
+            ss = sim.role_step_scale
+            inf = sim.role_influence
+            role_info = (f'step_scale: {ss.mean():.2f}\u00b1{ss.std():.2f}, '
+                         f'influence: {inf.mean():.2f}\u00b1{inf.std():.2f}')
+
+        result = {
+            'Mean Fitness': f'{fitness.mean():.4f}',
+            'Max Fitness': f'{fitness.max():.4f}',
+            'Summit Fraction': f'{summit_frac:.1%}',
+            'Local Trap %': f'{local_trap_frac:.1%}',
+            'Teams (clusters)': str(cm['cluster_count']),
+            'Exploration Rate': f'{exp_rate:.4f}',
+            'Pref Spread': f'{sim.prefs.astype(np.float64).std(axis=0).mean():.3f}',
+        }
+        if role_info:
+            result['Roles'] = role_info
+        if not has_roles:
+            result['Roles'] = 'Disabled (enable use_particle_roles)'
+        return result
+
+    return {
+        'init': init,
+        'post_step': post_step,
+        'check': None,
+        'metrics': metrics,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Registry
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -487,6 +603,20 @@ EXPERIMENT_REGISTRY = [
             'Try: different Field Strength and Decay values.'
         ),
         'factory': _exp3_factory,
+    },
+    {
+        'name': '4: Mountain Climbing (Roles)',
+        'description': (
+            'Org question: How does team composition (researchers, '
+            'leaders, engineers) affect strategy discovery?\n\n'
+            'A multi-peak fitness landscape in pref space. '
+            'Particles get noisy gradient nudges (researcher sensing). '
+            'Tracks: fitness, summit fraction, local traps, clusters.\n\n'
+            'ENABLE: use_particle_roles for heterogeneous teams.\n'
+            'Try: role_influence_std, role_step_scale_std, Social rate, '
+            'Memory Field.'
+        ),
+        'factory': _exp4_factory,
     },
 ]
 

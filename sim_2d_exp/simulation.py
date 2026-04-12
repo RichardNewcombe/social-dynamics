@@ -89,6 +89,40 @@ class Simulation:
         G = params['grid_res']
         self.memory_field = np.zeros((G, G, k), dtype=np.float64)
 
+        # Per-particle role arrays (opt-in via use_particle_roles)
+        self._init_roles()
+
+    # ── Role initialisation ────────────────────────────────────────
+
+    def _init_roles(self):
+        """Initialise per-particle role arrays.
+
+        When ``params['use_particle_roles']`` is False (default), all
+        arrays are set to neutral values (1.0 / 1.0) so the simulation
+        behaves identically to the original code.
+
+        When enabled, step-scale and influence are drawn from log-normal
+        distributions controlled by ``role_step_scale_std`` and
+        ``role_influence_std``.  A std of 0 gives uniform values.
+        """
+        n = self.n
+        if params.get('use_particle_roles', False):
+            ss_std = params.get('role_step_scale_std', 0.0)
+            inf_std = params.get('role_influence_std', 0.0)
+            if ss_std > 0:
+                self.role_step_scale = self.rng.lognormal(
+                    0.0, ss_std, n).astype(np.float64)
+            else:
+                self.role_step_scale = np.ones(n, dtype=np.float64)
+            if inf_std > 0:
+                self.role_influence = self.rng.lognormal(
+                    0.0, inf_std, n).astype(np.float64)
+            else:
+                self.role_influence = np.ones(n, dtype=np.float64)
+        else:
+            self.role_step_scale = np.ones(n, dtype=np.float64)
+            self.role_influence = np.ones(n, dtype=np.float64)
+
     # ── Initialisation helpers ──────────────────────────────────────
 
     def _init_positions(self, dist):
@@ -750,11 +784,31 @@ class Simulation:
             push = push_raw.mean(axis=1)
         movement += repulsion * push
 
-        self.pos = (pos + step_size * movement) % SPACE
+        # Per-particle step scaling (engineer role)
+        if params.get('use_particle_roles', False):
+            scaled_movement = movement * self.role_step_scale[:, None]
+        else:
+            scaled_movement = movement
+        self.pos = (pos + step_size * scaled_movement) % SPACE
 
         if social != 0:
             nbr_prefs = prefs[nbr_ids]
-            if params['social_dist_weight']:
+            # Per-particle influence weighting (leader role)
+            use_roles = params.get('use_particle_roles', False)
+            if use_roles and self.role_influence is not None:
+                # Weight each neighbor's contribution by their influence
+                inf_weights = self.role_influence[nbr_ids]  # (N, n_nbr)
+                if params['social_dist_weight']:
+                    d = dists[:, :, 0]
+                    w = inf_weights / (d + 1e-6)
+                else:
+                    w = inf_weights.copy()
+                if has_mask:
+                    w = w * valid
+                w_sum = w.sum(axis=1, keepdims=True)
+                w /= np.maximum(w_sum, 1e-10)
+                nbr_mean = (nbr_prefs * w[:, :, None]).sum(axis=1)
+            elif params['social_dist_weight']:
                 d = dists[:, :, 0]
                 w = 1.0 / (d + 1e-6)
                 if has_mask:

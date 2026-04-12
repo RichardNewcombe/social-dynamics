@@ -92,6 +92,10 @@ params = dict(
     use_signal_response=False,  # split prefs into signal + response vectors
     swap_signal_response=False, # swap roles: signal↔response in physics
     vis_pref_source=0,      # 0=Signal, 1=Response (which to visualize)
+    # ── Per-particle role heterogeneity ──
+    use_particle_roles=False,    # enable per-particle step/influence scaling
+    role_step_scale_std=0.0,     # std of log-normal step-scale distribution (0 = uniform)
+    role_influence_std=0.0,      # std of log-normal influence distribution (0 = uniform)
 )
 
 auto_scale_ref = dict(

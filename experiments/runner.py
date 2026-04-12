@@ -119,6 +119,10 @@ SAFE_DEFAULTS = {
     'crossover': False,
     'crossover_pct': 50,
     'crossover_interval': 1,
+    # Per-particle roles
+    'use_particle_roles': False,
+    'role_step_scale_std': 0.0,
+    'role_influence_std': 0.0,
     # Shadow
     'shadow_sim': False,
     'shadow_show_lines': True,
