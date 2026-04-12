@@ -281,6 +281,34 @@ def main():
             'memory_field': False,
         },
         # --- World knowledge + visionaries ---
+        # --- Rare visionary conditions ---
+        {
+            'label': 'Rare strong vis (5% frac, mean=0.60)',
+            'social': 0.01,
+            'use_particle_roles': True,
+            'role_influence_std': 0.8,
+            'role_step_scale_std': 0.5,
+            'role_gradient_noise_mean': 0.5,
+            'role_gradient_noise_std': 0.2,
+            'role_visionary_mean': 0.60,
+            'role_visionary_std': 0.10,
+            'role_visionary_fraction': 0.05,
+            'memory_field': False,
+        },
+        {
+            'label': 'Rare moderate vis (10% frac, mean=0.40)',
+            'social': 0.01,
+            'use_particle_roles': True,
+            'role_influence_std': 0.8,
+            'role_step_scale_std': 0.5,
+            'role_gradient_noise_mean': 0.5,
+            'role_gradient_noise_std': 0.2,
+            'role_visionary_mean': 0.40,
+            'role_visionary_std': 0.10,
+            'role_visionary_fraction': 0.10,
+            'memory_field': False,
+        },
+        # --- Cost-aware ---
         {
             'label': 'Moderate vis + memory (strength=3)',
             'social': 0.01,
@@ -335,6 +363,8 @@ def main():
                 'role_gradient_noise_std', 0.0),
             'role_visionary_mean': cond.get('role_visionary_mean', 0.0),
             'role_visionary_std': cond.get('role_visionary_std', 0.0),
+            'role_visionary_fraction': cond.get(
+                'role_visionary_fraction', 1.0),
         }
         if cond.get('memory_field', False):
             overrides.update({

@@ -42,7 +42,23 @@ from .shaders3d import (
     BOX_VERT, BOX_FRAG,
     LINE_VERT, LINE_FRAG,
     OVERLAY_VERT, OVERLAY_FRAG,
+    MESH_VERT, MESH_FRAG,
 )
+from .mountain_mesh import (
+    generate_mountain_mesh, generate_cost_colors,
+    project_particles_to_surface,
+)
+
+# ── Landscape imports (optional — only needed for mountain mode) ──
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from experiments.landscape import (
+        make_default_landscape, make_default_cost_landscape,
+    )
+    _HAS_LANDSCAPE = True
+except ImportError:
+    _HAS_LANDSCAPE = False
 from .camera3d import OrbitCamera
 from .simulation3d import (
     Simulation, params, auto_scale_ref, INIT_PRESETS,
@@ -260,6 +276,68 @@ def main():
     sim = Simulation()
     running_sim = True
 
+    # ── Mountain landscape setup ──
+    mountain_landscape = None
+    cost_landscape = None
+    vbo_mtn_pos = None
+    vbo_mtn_norm = None
+    vbo_mtn_col = None
+    vbo_cost_col = None
+    ibo_mtn = None
+    vao_mountain = None
+    vao_cost = None
+    mtn_n_indices = 0
+    prog_mesh = ctx.program(vertex_shader=MESH_VERT, fragment_shader=MESH_FRAG)
+
+    def build_mountain_mesh():
+        """(Re)build the mountain and cost mesh GPU buffers."""
+        nonlocal mountain_landscape, cost_landscape
+        nonlocal vbo_mtn_pos, vbo_mtn_norm, vbo_mtn_col, vbo_cost_col
+        nonlocal ibo_mtn, vao_mountain, vao_cost, mtn_n_indices
+
+        if not _HAS_LANDSCAPE:
+            return
+
+        k = params['k']
+        res = params['mountain_resolution']
+        z_scale = params['mountain_z_scale']
+
+        mountain_landscape = make_default_landscape(k=max(k, 2))
+        cost_landscape = make_default_cost_landscape(k=max(k, 2))
+
+        verts, normals, colors_f, indices, _ = generate_mountain_mesh(
+            mountain_landscape, resolution=res, z_scale=z_scale,
+            pref_dims=max(k, 2))
+
+        colors_c, _ = generate_cost_colors(
+            cost_landscape, landscape_k=max(k, 2), resolution=res)
+
+        mtn_n_indices = len(indices)
+
+        # Create GPU buffers
+        vbo_mtn_pos = ctx.buffer(verts.tobytes())
+        vbo_mtn_norm = ctx.buffer(normals.tobytes())
+        vbo_mtn_col = ctx.buffer(colors_f.tobytes())
+        vbo_cost_col = ctx.buffer(colors_c.tobytes())
+        ibo_mtn = ctx.buffer(indices.tobytes())
+
+        # VAO for fitness-colored mountain
+        vao_mountain = ctx.vertex_array(prog_mesh, [
+            (vbo_mtn_pos, '3f', 'in_pos'),
+            (vbo_mtn_norm, '3f', 'in_normal'),
+            (vbo_mtn_col, '3f', 'in_color'),
+        ], index_buffer=ibo_mtn)
+
+        # VAO for cost-colored overlay (same geometry, different colors)
+        vao_cost = ctx.vertex_array(prog_mesh, [
+            (vbo_mtn_pos, '3f', 'in_pos'),
+            (vbo_mtn_norm, '3f', 'in_normal'),
+            (vbo_cost_col, '3f', 'in_color'),
+        ], index_buffer=ibo_mtn)
+
+    # Build initial mountain mesh
+    build_mountain_mesh()
+
     # ── Recording state ──
     rec_process = None
     rec_frame_count = 0
@@ -403,6 +481,11 @@ def main():
 
         # ── Upload particle data to GPU ──
         positions, colors = sim.get_render_data()
+        # Mountain mode: project particles onto the fitness surface
+        if params['mountain_mode'] and mountain_landscape is not None:
+            positions = project_particles_to_surface(
+                sim.prefs, mountain_landscape,
+                z_scale=params['mountain_z_scale'])
         vbo_pos.write(positions.tobytes())
         vbo_col.write(colors.tobytes())
 
@@ -505,6 +588,33 @@ def main():
                 prog_line['mvp'].write(mvp_bytes)
                 prog_line['line_color'] = (1.0, 1.0, 1.0, 0.04)
                 vao_line.render(moderngl.LINES, vertices=n_circle_verts)
+
+        # ── Render mountain mesh (before particles so particles appear on top) ──
+        if params['show_mountain'] and vao_mountain is not None:
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            # Light from upper-right
+            light_dir = np.array([0.4, 0.3, 0.8], dtype='f4')
+            light_dir /= np.linalg.norm(light_dir)
+            prog_mesh['mvp'].write(mvp_bytes)
+            prog_mesh['alpha'] = params['mountain_alpha']
+            prog_mesh['light_dir'] = tuple(light_dir)
+            vao_mountain.render(moderngl.TRIANGLES)
+
+        # ── Render cost overlay (slightly offset Z to avoid z-fighting) ──
+        if params['show_cost_overlay'] and vao_cost is not None:
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            light_dir = np.array([0.4, 0.3, 0.8], dtype='f4')
+            light_dir /= np.linalg.norm(light_dir)
+            prog_mesh['mvp'].write(mvp_bytes)
+            prog_mesh['alpha'] = params['cost_alpha']
+            prog_mesh['light_dir'] = tuple(light_dir)
+            # Use polygon offset to prevent z-fighting with mountain
+            _GL.glEnable(_GL.GL_POLYGON_OFFSET_FILL)
+            _GL.glPolygonOffset(-1.0, -1.0)
+            vao_cost.render(moderngl.TRIANGLES)
+            _GL.glDisable(_GL.GL_POLYGON_OFFSET_FILL)
 
         # Render particles
         prog_particle['mvp'].write(mvp_bytes)
@@ -640,6 +750,45 @@ def main():
                    f"El: {math.degrees(camera.elevation):.0f}  "
                    f"Dist: {camera.distance:.1f}")
         imgui.separator()
+
+        # ── Mountain visualization ──
+        if _HAS_LANDSCAPE:
+            if imgui.collapsing_header("Mountain / Cost Landscape"):
+                changed, v = imgui.checkbox("Show Mountain", params['show_mountain'])
+                if changed:
+                    params['show_mountain'] = v
+                    if v and vao_mountain is None:
+                        build_mountain_mesh()
+                imgui.same_line()
+                changed, v = imgui.checkbox("Cost Overlay", params['show_cost_overlay'])
+                if changed:
+                    params['show_cost_overlay'] = v
+                changed, v = imgui.checkbox("Mountain Mode", params['mountain_mode'])
+                if changed:
+                    params['mountain_mode'] = v
+                if params['mountain_mode']:
+                    imgui.same_line()
+                    imgui.text_colored(imgui.ImVec4(0.3, 1.0, 0.3, 1.0),
+                                       "particles on surface")
+                changed, v = imgui.drag_float("Mtn Alpha", params['mountain_alpha'],
+                                              0.01, 0.05, 1.0, "%.2f")
+                if changed:
+                    params['mountain_alpha'] = v
+                changed, v = imgui.drag_float("Cost Alpha", params['cost_alpha'],
+                                              0.01, 0.05, 1.0, "%.2f")
+                if changed:
+                    params['cost_alpha'] = v
+                changed, v = imgui.drag_float("Z Scale", params['mountain_z_scale'],
+                                              0.01, 0.1, 1.0, "%.2f")
+                if changed:
+                    params['mountain_z_scale'] = v
+                    build_mountain_mesh()
+                changed, v = imgui.drag_int("Mesh Res", params['mountain_resolution'],
+                                            1.0, 16, 128)
+                if changed:
+                    params['mountain_resolution'] = v
+                    build_mountain_mesh()
+            imgui.separator()
 
         # ── Live parameters ──
         if imgui.collapsing_header(

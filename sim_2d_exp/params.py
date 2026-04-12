@@ -100,6 +100,7 @@ params = dict(
     role_gradient_noise_std=0.0,   # std of gradient noise distribution (0 = uniform)
     role_visionary_mean=0.0,       # mean visionary blend weight (0 = no summit sensing)
     role_visionary_std=0.0,        # std of visionary distribution (0 = uniform)
+    role_visionary_fraction=1.0,   # fraction of particles that can be visionaries (rarity)
 )
 
 auto_scale_ref = dict(

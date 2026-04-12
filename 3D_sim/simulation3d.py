@@ -66,6 +66,14 @@ params = dict(
     torch_device=0,
     flat_z=False,
     show_axes=True,
+    # Mountain visualization
+    show_mountain=False,
+    show_cost_overlay=False,
+    mountain_alpha=0.4,
+    cost_alpha=0.35,
+    mountain_z_scale=0.5,
+    mountain_resolution=64,
+    mountain_mode=False,  # when True, particles are projected onto the surface
 )
 
 auto_scale_ref = dict(

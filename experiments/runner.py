@@ -127,6 +127,7 @@ SAFE_DEFAULTS = {
     'role_gradient_noise_std': 0.0,
     'role_visionary_mean': 0.0,
     'role_visionary_std': 0.0,
+    'role_visionary_fraction': 1.0,
     # Shadow
     'shadow_sim': False,
     'shadow_show_lines': True,

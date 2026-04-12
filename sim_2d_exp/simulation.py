@@ -139,16 +139,27 @@ class Simulation:
             else:
                 self.role_gradient_noise = np.full(n, gn_mean,
                                                    dtype=np.float64)
-            # Visionary
+            # Visionary (rare — only a fraction of particles get the gift)
             vis_mean = params.get('role_visionary_mean', 0.0)
             vis_std = params.get('role_visionary_std', 0.0)
+            vis_frac = params.get('role_visionary_fraction', 1.0)
             if vis_std > 0:
-                self.role_visionary = np.clip(
+                raw_vis = np.clip(
                     self.rng.normal(vis_mean, vis_std, n),
                     0.0, 1.0).astype(np.float64)
             else:
-                self.role_visionary = np.full(n, np.clip(vis_mean, 0, 1),
-                                             dtype=np.float64)
+                raw_vis = np.full(n, np.clip(vis_mean, 0, 1),
+                                  dtype=np.float64)
+            # Apply rarity: only vis_frac of particles keep their
+            # visionary ability; the rest are set to zero.
+            if vis_frac < 1.0:
+                n_visionaries = max(1, int(round(n * vis_frac)))
+                mask = np.zeros(n, dtype=bool)
+                chosen = self.rng.choice(n, size=n_visionaries,
+                                         replace=False)
+                mask[chosen] = True
+                raw_vis[~mask] = 0.0
+            self.role_visionary = raw_vis
         else:
             self.role_step_scale = np.ones(n, dtype=np.float64)
             self.role_influence = np.ones(n, dtype=np.float64)

@@ -4,6 +4,7 @@ GLSL Shaders for 3D Particle Simulation
 
 PARTICLE_VERT: 3D particle positions → MVP projection with perspective point size
 BOX_VERT: 3D wireframe cube via MVP
+MESH_VERT/MESH_FRAG: Triangle mesh surface with per-vertex color and diffuse lighting
 OVERLAY_VERT: 2D overlay (divider line) — maps vec2 directly to NDC
 Screen-space shaders (QUAD_VERT, TRAIL_FRAG, SPLAT_FRAG, DISPLAY_FRAG) unchanged from 2D.
 """
@@ -122,6 +123,46 @@ out vec4 fragColor;
 uniform vec4 line_color;
 void main() {
     fragColor = line_color;
+}
+'''
+
+# ── Mesh surface shaders (mountain + cost overlay) ──
+
+MESH_VERT = '''
+#version 410 core
+in vec3 in_pos;
+in vec3 in_normal;
+in vec3 in_color;
+out vec3 v_color;
+out vec3 v_normal;
+out vec3 v_world_pos;
+uniform mat4 mvp;
+
+void main() {
+    gl_Position = mvp * vec4(in_pos, 1.0);
+    v_color = in_color;
+    v_normal = in_normal;
+    v_world_pos = in_pos;
+}
+'''
+
+MESH_FRAG = '''
+#version 410 core
+in vec3 v_color;
+in vec3 v_normal;
+in vec3 v_world_pos;
+out vec4 fragColor;
+uniform float alpha;
+uniform vec3 light_dir;  // normalized direction TO the light
+
+void main() {
+    vec3 n = normalize(v_normal);
+    // Simple diffuse + ambient lighting
+    float diffuse = max(dot(n, light_dir), 0.0);
+    float ambient = 0.3;
+    float lighting = ambient + 0.7 * diffuse;
+    vec3 lit_color = v_color * lighting;
+    fragColor = vec4(lit_color, alpha);
 }
 '''
 
