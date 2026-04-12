@@ -98,30 +98,62 @@ class Simulation:
         """Initialise per-particle role arrays.
 
         When ``params['use_particle_roles']`` is False (default), all
-        arrays are set to neutral values (1.0 / 1.0) so the simulation
-        behaves identically to the original code.
+        arrays are set to neutral values so the simulation behaves
+        identically to the original code.
 
-        When enabled, step-scale and influence are drawn from log-normal
-        distributions controlled by ``role_step_scale_std`` and
-        ``role_influence_std``.  A std of 0 gives uniform values.
+        Four role dimensions:
+          - **role_step_scale** (engineer): movement magnitude multiplier.
+            Drawn from log-normal(0, std).  Default 1.0.
+          - **role_influence** (leader): social-learning weight.
+            Drawn from log-normal(0, std).  Default 1.0.
+          - **role_gradient_noise** (researcher): noise std on gradient
+            sensing.  Lower = better researcher = more expensive.
+            Drawn from |Normal(mean, std)|.  Default = mean value.
+          - **role_visionary**: blend weight toward the global summit.
+            Drawn from clipped Normal(mean, std) in [0, 1].
+            Default 0.0 (no summit sensing).
         """
         n = self.n
         if params.get('use_particle_roles', False):
+            # Engineer
             ss_std = params.get('role_step_scale_std', 0.0)
-            inf_std = params.get('role_influence_std', 0.0)
             if ss_std > 0:
                 self.role_step_scale = self.rng.lognormal(
                     0.0, ss_std, n).astype(np.float64)
             else:
                 self.role_step_scale = np.ones(n, dtype=np.float64)
+            # Leader
+            inf_std = params.get('role_influence_std', 0.0)
             if inf_std > 0:
                 self.role_influence = self.rng.lognormal(
                     0.0, inf_std, n).astype(np.float64)
             else:
                 self.role_influence = np.ones(n, dtype=np.float64)
+            # Researcher (gradient noise)
+            gn_mean = params.get('role_gradient_noise_mean', 0.5)
+            gn_std = params.get('role_gradient_noise_std', 0.0)
+            if gn_std > 0:
+                self.role_gradient_noise = np.abs(
+                    self.rng.normal(gn_mean, gn_std, n)
+                ).astype(np.float64)
+            else:
+                self.role_gradient_noise = np.full(n, gn_mean,
+                                                   dtype=np.float64)
+            # Visionary
+            vis_mean = params.get('role_visionary_mean', 0.0)
+            vis_std = params.get('role_visionary_std', 0.0)
+            if vis_std > 0:
+                self.role_visionary = np.clip(
+                    self.rng.normal(vis_mean, vis_std, n),
+                    0.0, 1.0).astype(np.float64)
+            else:
+                self.role_visionary = np.full(n, np.clip(vis_mean, 0, 1),
+                                             dtype=np.float64)
         else:
             self.role_step_scale = np.ones(n, dtype=np.float64)
             self.role_influence = np.ones(n, dtype=np.float64)
+            self.role_gradient_noise = np.full(n, 0.5, dtype=np.float64)
+            self.role_visionary = np.zeros(n, dtype=np.float64)
 
     # ── Initialisation helpers ──────────────────────────────────────
 

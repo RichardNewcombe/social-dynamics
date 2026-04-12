@@ -123,6 +123,10 @@ SAFE_DEFAULTS = {
     'use_particle_roles': False,
     'role_step_scale_std': 0.0,
     'role_influence_std': 0.0,
+    'role_gradient_noise_mean': 0.5,
+    'role_gradient_noise_std': 0.0,
+    'role_visionary_mean': 0.0,
+    'role_visionary_std': 0.0,
     # Shadow
     'shadow_sim': False,
     'shadow_show_lines': True,

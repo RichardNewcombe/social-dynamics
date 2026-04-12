@@ -451,59 +451,86 @@ def _exp3_factory(ctrl):
 # ═══════════════════════════════════════════════════════════════════
 
 def _exp4_factory(ctrl):
-    """Mountain Climbing with Heterogeneous Roles.
+    """Mountain Climbing with Heterogeneous Roles & Cost.
 
     Org question: "How does team composition (researchers, leaders,
-    engineers) and social dynamics affect the ability to discover the
-    best strategy in a rugged landscape?"
+    engineers, visionaries) and social dynamics affect the ability to
+    discover the best strategy in a rugged landscape — and at what cost?"
 
-    A multi-peak fitness landscape is defined in preference space.
-    Each step, particles receive a noisy gradient nudge toward the
-    nearest uphill direction.  The noise simulates imperfect knowledge
-    — some people read the terrain better than others.
+    A multi-peak fitness landscape + independent cost terrain.
+    Each step, particles get a noisy gradient nudge blended with a
+    visionary signal toward the global summit.  Cost is accumulated.
 
     Key parameters:
       - Social rate: conformity vs independence
-      - use_particle_roles: enable heterogeneous step/influence
-      - role_influence_std: leader heterogeneity
-      - role_step_scale_std: engineer heterogeneity
+      - use_particle_roles: enable heterogeneous roles
+      - role_visionary_mean/std: visionary concentration
+      - role_gradient_noise_mean/std: researcher quality
       - Memory field: historical world knowledge
     """
-    from experiments.landscape import make_default_landscape
+    from experiments.landscape import (
+        make_default_landscape, make_default_cost_landscape,
+        compute_employee_cost,
+    )
 
     _prev_prefs = [None]
     _gradient_strength = [0.003]
-    _gradient_noise_std = [0.5]
+    _cost_acc = [{'total': 0.0, 'terrain': 0.0, 'employee': 0.0}]
 
     def init(sim):
         """Start particles near origin (far from global peak)."""
         _prev_prefs[0] = None
+        _cost_acc[0] = {'total': 0.0, 'terrain': 0.0, 'employee': 0.0}
         noise = sim.rng.normal(0, 0.15, (sim.n, sim.k))
         sim.prefs = np.clip(noise, -1, 1).astype(sim.prefs.dtype)
         sim.response = sim.prefs.copy()
-        # Re-initialise roles if enabled
         sim._init_roles()
         if sim.memory_field is not None:
             sim.memory_field[:] = 0.0
         apply_post_processing(sim)
 
     def post_step(sim, step):
-        """Apply noisy gradient nudge (researcher sensing)."""
+        """Noisy gradient + visionary blend + cost accumulation."""
         landscape = make_default_landscape(k=sim.k)
-        grad_unit, fitness, peak_ids = landscape.gradient(sim.prefs)
+        cost_landscape = make_default_cost_landscape(k=sim.k)
+        prefs = sim.prefs.astype(np.float64)
 
-        # Per-particle noise
-        noise = sim.rng.normal(0, _gradient_noise_std[0], grad_unit.shape)
+        # True local gradient
+        grad_unit, fitness, peak_ids = landscape.gradient(prefs)
+
+        # Per-particle noise (researcher factor from core sim)
+        noise = sim.rng.normal(0, 1, grad_unit.shape)
+        noise *= sim.role_gradient_noise[:, None]
         noisy_grad = grad_unit + noise
         norms = np.linalg.norm(noisy_grad, axis=1, keepdims=True)
         norms = np.maximum(norms, 1e-12)
         noisy_grad = noisy_grad / norms
 
-        nudge = _gradient_strength[0] * noisy_grad
-        sim.prefs = np.clip(
-            sim.prefs.astype(np.float64) + nudge, -1, 1
-        ).astype(sim.prefs.dtype)
+        # Visionary signal (direction to global summit)
+        global_center = landscape.centers[0]
+        to_summit = global_center - prefs
+        summit_norms = np.linalg.norm(to_summit, axis=1, keepdims=True)
+        summit_norms = np.maximum(summit_norms, 1e-12)
+        summit_dir = to_summit / summit_norms
+
+        # Blend: (1 - v) * local + v * summit
+        v = sim.role_visionary[:, None]
+        effective_grad = (1.0 - v) * noisy_grad + v * summit_dir
+        eff_norms = np.linalg.norm(effective_grad, axis=1, keepdims=True)
+        eff_norms = np.maximum(eff_norms, 1e-12)
+        effective_grad = effective_grad / eff_norms
+
+        # Apply nudge
+        nudge = _gradient_strength[0] * effective_grad
+        sim.prefs = np.clip(prefs + nudge, -1, 1).astype(sim.prefs.dtype)
         apply_post_processing(sim)
+
+        # Accumulate cost
+        terrain_cost = cost_landscape.cost(sim.prefs)
+        employee_cost = compute_employee_cost(sim)
+        _cost_acc[0]['total'] += float((terrain_cost + employee_cost).sum())
+        _cost_acc[0]['terrain'] += float(terrain_cost.sum())
+        _cost_acc[0]['employee'] += float(employee_cost.sum())
 
     def metrics(sim, step):
         landscape = make_default_landscape(k=sim.k)
@@ -530,14 +557,25 @@ def _exp4_factory(ctrl):
         exp_rate = _exploration_rate(sim.prefs, _prev_prefs[0])
         _prev_prefs[0] = sim.prefs.copy()
 
+        # Cost
+        acc = _cost_acc[0]
+        cost_str = f"{acc['total']:.0f} (terr={acc['terrain']:.0f}, emp={acc['employee']:.0f})"
+
         # Role info
         has_roles = params.get('use_particle_roles', False)
         role_info = ''
         if has_roles:
             ss = sim.role_step_scale
             inf = sim.role_influence
-            role_info = (f'step_scale: {ss.mean():.2f}\u00b1{ss.std():.2f}, '
-                         f'influence: {inf.mean():.2f}\u00b1{inf.std():.2f}')
+            gn = sim.role_gradient_noise
+            vis = sim.role_visionary
+            role_info = (f'eng={ss.mean():.2f}\u00b1{ss.std():.2f}, '
+                         f'ldr={inf.mean():.2f}\u00b1{inf.std():.2f}, '
+                         f'res_noise={gn.mean():.2f}\u00b1{gn.std():.2f}, '
+                         f'vis={vis.mean():.2f}\u00b1{vis.std():.2f}')
+
+        # Efficiency
+        efficiency = summit_frac / (acc['total'] + 1) * 1e6
 
         result = {
             'Mean Fitness': f'{fitness.mean():.4f}',
@@ -546,7 +584,8 @@ def _exp4_factory(ctrl):
             'Local Trap %': f'{local_trap_frac:.1%}',
             'Teams (clusters)': str(cm['cluster_count']),
             'Exploration Rate': f'{exp_rate:.4f}',
-            'Pref Spread': f'{sim.prefs.astype(np.float64).std(axis=0).mean():.3f}',
+            'Total Cost': cost_str,
+            'Efficiency (summit/cost)': f'{efficiency:.2f}',
         }
         if role_info:
             result['Roles'] = role_info
@@ -605,16 +644,18 @@ EXPERIMENT_REGISTRY = [
         'factory': _exp3_factory,
     },
     {
-        'name': '4: Mountain Climbing (Roles)',
+        'name': '4: Mountain Climbing (Roles & Cost)',
         'description': (
             'Org question: How does team composition (researchers, '
-            'leaders, engineers) affect strategy discovery?\n\n'
-            'A multi-peak fitness landscape in pref space. '
-            'Particles get noisy gradient nudges (researcher sensing). '
-            'Tracks: fitness, summit fraction, local traps, clusters.\n\n'
+            'leaders, engineers, visionaries) affect strategy discovery '
+            '\u2014 and at what cost?\n\n'
+            'Multi-peak fitness landscape + cost terrain. '
+            'Visionaries sense the summit but march through expensive '
+            'terrain. Tracks: fitness, summit %, traps, total cost, '
+            'efficiency (summit/cost).\n\n'
             'ENABLE: use_particle_roles for heterogeneous teams.\n'
-            'Try: role_influence_std, role_step_scale_std, Social rate, '
-            'Memory Field.'
+            'Try: role_visionary_mean, role_gradient_noise_mean, '
+            'Social rate, Memory Field.'
         ),
         'factory': _exp4_factory,
     },

@@ -96,6 +96,10 @@ params = dict(
     use_particle_roles=False,    # enable per-particle step/influence scaling
     role_step_scale_std=0.0,     # std of log-normal step-scale distribution (0 = uniform)
     role_influence_std=0.0,      # std of log-normal influence distribution (0 = uniform)
+    role_gradient_noise_mean=0.5,  # mean gradient noise (lower = better researcher)
+    role_gradient_noise_std=0.0,   # std of gradient noise distribution (0 = uniform)
+    role_visionary_mean=0.0,       # mean visionary blend weight (0 = no summit sensing)
+    role_visionary_std=0.0,        # std of visionary distribution (0 = uniform)
 )
 
 auto_scale_ref = dict(
