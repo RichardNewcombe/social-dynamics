@@ -601,6 +601,136 @@ def _exp4_factory(ctrl):
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Experiment 5: Dual-Space Mountain Climbing
+# ═══════════════════════════════════════════════════════════════════════
+
+def _exp5_factory(ctrl):
+    """Dual-Space Mountain Climbing.
+
+    Org question: "Does separating team culture from strategy help or
+    hurt mountain climbing — and at what coupling level?"
+
+    Preferences drive team formation (social dynamics, neighbor graph).
+    Strategy drives mountain position (gradient sensing, knowledge sharing).
+    The coupling parameter controls how much these overlap.
+
+    The post-step hook calls sim.strategy_step() which uses the
+    preference-space neighbor graph for team-aggregated navigation.
+    """
+    from experiments.landscape import (
+        make_default_landscape, make_default_cost_landscape,
+        compute_employee_cost,
+    )
+    _prev_prefs = [None]
+    _cost_acc = [{'total': 0.0, 'terrain': 0.0, 'employee': 0.0}]
+
+    def init(sim):
+        """Scatter particles uniformly and enable strategy mode."""
+        _prev_prefs[0] = None
+        _cost_acc[0] = {'total': 0.0, 'terrain': 0.0, 'employee': 0.0}
+        sim.prefs = sim.rng.uniform(-1, 1, (sim.n, sim.k)).astype(sim.prefs.dtype)
+        sim.response = sim.prefs.copy()
+        apply_post_processing(sim)
+        # Re-initialize strategy from prefs with coupling
+        if sim.strategy is not None:
+            coupling = params.get('pref_strategy_coupling', 0.5)
+            noise = sim.rng.uniform(-1, 1, sim.strategy.shape).astype(
+                sim.strategy.dtype)
+            sim.strategy = (coupling * sim.prefs[:, :sim.strategy_k]
+                            + (1 - coupling) * noise)
+            np.clip(sim.strategy, -1, 1, out=sim.strategy)
+
+    def post_step(sim, step):
+        """Phase 2: team-aggregated mountain navigation via strategy_step."""
+        landscape = make_default_landscape(k=sim.strategy_k if sim.strategy is not None else sim.k)
+        cost_landscape = make_default_cost_landscape(k=sim.strategy_k if sim.strategy is not None else sim.k)
+        summit_center = landscape.centers[0]
+
+        def _gradient_fn(strategy):
+            return landscape.gradient(strategy)
+
+        # Call the core strategy_step method
+        sim.strategy_step(gradient_fn=_gradient_fn,
+                          summit_center=summit_center)
+
+        # Accumulate cost in strategy space
+        coords = sim.strategy if sim.strategy is not None else sim.prefs
+        terrain_cost = cost_landscape.cost(coords)
+        employee_cost = compute_employee_cost(sim)
+        _cost_acc[0]['total'] += float((terrain_cost + employee_cost).sum())
+        _cost_acc[0]['terrain'] += float(terrain_cost.sum())
+        _cost_acc[0]['employee'] += float(employee_cost.sum())
+
+    def metrics(sim, step):
+        landscape = make_default_landscape(k=sim.strategy_k if sim.strategy is not None else sim.k)
+        coords = sim.strategy if sim.strategy is not None else sim.prefs
+        coords_f64 = coords.astype(np.float64)
+
+        fitness, peak_ids = landscape.fitness(coords_f64)
+
+        # Summit fraction (strategy space)
+        global_center = landscape.centers[0]
+        diff = coords_f64 - global_center
+        dists_to_summit = np.linalg.norm(diff, axis=1)
+        summit_frac = float((dists_to_summit <= 0.35).sum() / len(coords))
+
+        # Local trap fraction
+        local_trap = 0
+        for pid in range(1, landscape.n_peaks):
+            diff_l = coords_f64 - landscape.centers[pid]
+            dists_l = np.linalg.norm(diff_l, axis=1)
+            local_trap += (dists_l <= 0.35).sum()
+        local_trap_frac = float(local_trap / len(coords))
+
+        # Preference-space team metrics
+        cm = _cluster_metrics(sim.prefs)
+
+        # Strategy-preference divergence
+        if sim.strategy is not None and sim.strategy_k == sim.k:
+            divergence = float(np.linalg.norm(
+                coords_f64 - sim.prefs.astype(np.float64),
+                axis=1).mean())
+        else:
+            divergence = 0.0
+
+        # Exploration rate (preference space)
+        exp_rate = _exploration_rate(sim.prefs, _prev_prefs[0])
+        _prev_prefs[0] = sim.prefs.copy()
+
+        # Cost
+        acc = _cost_acc[0]
+        efficiency = summit_frac / (acc['total'] + 1) * 1e6
+
+        # Coupling info
+        coupling = params.get('pref_strategy_coupling', 0.5)
+
+        result = {
+            'Mean Fitness': f'{fitness.mean():.4f}',
+            'Summit Fraction': f'{summit_frac:.1%}',
+            'Local Trap %': f'{local_trap_frac:.1%}',
+            'Teams (pref clusters)': str(cm['cluster_count']),
+            'Pref-Strategy Divergence': f'{divergence:.3f}',
+            'Coupling': f'{coupling:.2f}',
+            'Exploration Rate': f'{exp_rate:.4f}',
+            'Total Cost': f"{acc['total']:.0f}",
+            'Efficiency (summit/cost)': f'{efficiency:.2f}',
+        }
+
+        # Strategy enabled status
+        if sim.strategy is None:
+            result['WARNING'] = 'strategy_enabled is OFF — using prefs as strategy'
+
+        return result
+
+    return {
+        'init': init,
+        'post_step': post_step,
+        'check': None,
+        'metrics': metrics,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Registry
 # ═══════════════════════════════════════════════════════════════════════
@@ -658,6 +788,20 @@ EXPERIMENT_REGISTRY = [
             'Social rate, Memory Field.'
         ),
         'factory': _exp4_factory,
+    },
+    {
+        'name': '5: Dual-Space Mountain (Prefs \u2260 Strategy)',
+        'description': (
+            'Org question: Does separating team culture from strategy '
+            'help or hurt mountain climbing?\n\n'
+            'Preferences drive team formation (social dynamics). '
+            'Strategy drives mountain position (gradient + knowledge '
+            'sharing through teams). Coupling controls overlap.\n\n'
+            'ENABLE: strategy_enabled, use_particle_roles.\n'
+            'Try: pref_strategy_coupling (0=generalist, 1=specialist), '
+            'Social rate, role params, strategy_memory_enabled.'
+        ),
+        'factory': _exp5_factory,
     },
 ]
 

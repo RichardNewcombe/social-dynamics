@@ -85,9 +85,34 @@ class Simulation:
         self.tracked = np.zeros(n, dtype=bool)
         self.tracked_seed = np.zeros(n, dtype=bool)
 
-        # Spatial memory field: (G, G, K)
+        # Spatial memory field (cultural): (G, G, K)
         G = params['grid_res']
         self.memory_field = np.zeros((G, G, k), dtype=np.float64)
+
+        # -- Strategy space (dual-space mode) --
+        # When enabled, strategy is a separate NxK_s vector for mountain
+        # navigation.  Preferences remain the social/team identity space.
+        # The coupling parameter controls how much they overlap.
+        self._strategy_enabled = params.get('strategy_enabled', False)
+        k_s = params.get('strategy_k', k)  # default: same dim as prefs
+        self.strategy_k = k_s
+        if self._strategy_enabled:
+            coupling = params.get('pref_strategy_coupling', 0.5)
+            # Initialise strategy as a blend of preferences and random
+            rand_strat = self.rng.uniform(-1, 1, (n, k_s)).astype(np.float64)
+            if k_s == k:
+                pref_f64 = self.prefs.astype(np.float64)
+                self.strategy = np.clip(
+                    coupling * pref_f64 + (1.0 - coupling) * rand_strat,
+                    -1, 1)
+            else:
+                # Different dimensionality: pure random init
+                self.strategy = rand_strat
+            # Strategy memory field (knowledge): (G, G, K_s)
+            self.strategy_memory = np.zeros((G, G, k_s), dtype=np.float64)
+        else:
+            self.strategy = None
+            self.strategy_memory = None
 
         # Per-particle role arrays (opt-in via use_particle_roles)
         self._init_roles()
@@ -545,6 +570,115 @@ class Simulation:
             self.expand_tracked()
         elif mode == 1:
             self.update_tracked_with_neighbors()
+
+        # -- Strategy space: preference-strategy coupling drift --
+        if self._strategy_enabled and self.strategy is not None:
+            coupling = params.get('pref_strategy_coupling', 0.5)
+            if coupling > 0 and self.strategy_k == self.k:
+                # Preferences drag strategy slightly each step
+                pref_f64 = self.prefs.astype(np.float64)
+                drift = coupling * 0.01 * (pref_f64 - self.strategy)
+                self.strategy = np.clip(self.strategy + drift, -1, 1)
+
+    def strategy_step(self, gradient_fn=None, summit_center=None):
+        """Phase 2: team-aggregated mountain navigation in strategy space.
+
+        Called by the experiment's post_step_fn after sim.step().
+        Uses the preference-space neighbor graph (self.nbr_ids) to
+        aggregate gradient observations across team members.
+
+        Parameters
+        ----------
+        gradient_fn : callable(strategy_array) -> (grad_unit, fitness, peak_ids)
+            Returns the true gradient of the fitness landscape at each
+            particle's strategy position.
+        summit_center : ndarray of shape (K_s,) or None
+            If provided, visionaries blend toward this point.
+        """
+        if self.strategy is None or gradient_fn is None:
+            return
+        if self.nbr_ids is None:
+            return  # no neighbor graph yet
+
+        n = self.n
+        k_s = self.strategy_k
+        nbr_ids = self.nbr_ids
+        valid = self._valid_mask
+        has_mask = valid is not None
+
+        # -- 1. Each particle senses the gradient with researcher noise --
+        grad_unit, fitness, peak_ids = gradient_fn(self.strategy)
+        noise = self.rng.normal(0, 1, grad_unit.shape)
+        noise *= self.role_gradient_noise[:, None]
+        noisy_grad = grad_unit + noise
+        norms = np.linalg.norm(noisy_grad, axis=1, keepdims=True)
+        noisy_grad = noisy_grad / np.maximum(norms, 1e-12)
+
+        # -- 2. Visionary blend (per-particle) --
+        if summit_center is not None:
+            to_summit = summit_center - self.strategy
+            s_norms = np.linalg.norm(to_summit, axis=1, keepdims=True)
+            summit_dir = to_summit / np.maximum(s_norms, 1e-12)
+            v = self.role_visionary[:, None]
+            noisy_grad = (1.0 - v) * noisy_grad + v * summit_dir
+            norms = np.linalg.norm(noisy_grad, axis=1, keepdims=True)
+            noisy_grad = noisy_grad / np.maximum(norms, 1e-12)
+
+        # -- 3. Team aggregation: weight by leader influence --
+        nbr_grads = noisy_grad[nbr_ids]  # (N, n_nbr, K_s)
+        inf_weights = self.role_influence[nbr_ids]  # (N, n_nbr)
+        if has_mask:
+            inf_weights = inf_weights * valid
+        w_sum = inf_weights.sum(axis=1, keepdims=True)
+        w_norm = inf_weights / np.maximum(w_sum, 1e-10)  # (N, n_nbr)
+        team_grad = (nbr_grads * w_norm[:, :, None]).sum(axis=1)  # (N, K_s)
+
+        # Include own observation (self-weight = 1.0)
+        team_grad = 0.5 * noisy_grad + 0.5 * team_grad
+        t_norms = np.linalg.norm(team_grad, axis=1, keepdims=True)
+        team_grad = team_grad / np.maximum(t_norms, 1e-12)
+
+        # -- 4. Move in strategy space (engineer step scale) --
+        strat_step = params.get('strategy_step_size', 0.003)
+        step_mag = strat_step * self.role_step_scale
+        self.strategy = np.clip(
+            self.strategy + step_mag[:, None] * team_grad, -1, 1)
+
+        # -- 5. Strategy memory field: read, write, decay, blur --
+        if self.strategy_memory is not None and params.get(
+                'strategy_memory_enabled', False):
+            G = self.strategy_memory.shape[0]
+            inv_cell = G / SPACE
+            # Map strategy [-1,1] -> [0,1] for grid indexing
+            strat_01 = (self.strategy[:, :2] + 1.0) * 0.5
+            sx = (strat_01[:, 0] * inv_cell).astype(int) % G
+            sy = (strat_01[:, 1] * inv_cell).astype(int) % G
+
+            # Read: modulate strategy movement by knowledge field
+            strength = params.get('strategy_memory_strength', 0.5)
+            field_at = self.strategy_memory[sy, sx]  # (N, K_s)
+            # Additive nudge from accumulated knowledge
+            self.strategy = np.clip(
+                self.strategy + strength * 0.01 * field_at, -1, 1)
+
+            # Write: deposit current strategy into knowledge field
+            write_rate = params.get('strategy_memory_write_rate', 0.01)
+            for d in range(k_s):
+                np.add.at(self.strategy_memory[:, :, d], (sy, sx),
+                          write_rate * self.strategy[:, d])
+
+            # Decay
+            decay = params.get('strategy_memory_decay', 0.999)
+            self.strategy_memory *= decay
+
+            # Blur
+            if params.get('strategy_memory_blur', False):
+                from scipy.ndimage import gaussian_filter
+                sigma = params.get('strategy_memory_blur_sigma', 1.0)
+                for d in range(k_s):
+                    self.strategy_memory[:, :, d] = gaussian_filter(
+                        self.strategy_memory[:, :, d],
+                        sigma=sigma, mode='wrap')
 
     def _step_impl(self, reuse_neighbors=False):
         """Core physics step — dispatches to Numba, NumPy, or PyTorch engine."""

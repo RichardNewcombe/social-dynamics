@@ -482,9 +482,13 @@ def main():
         # ── Upload particle data to GPU ──
         positions, colors = sim.get_render_data()
         # Mountain mode: project particles onto the fitness surface
+        # Use strategy vector if available (dual-space), else prefs
         if params['mountain_mode'] and mountain_landscape is not None:
+            mountain_coords = getattr(sim, 'strategy', None)
+            if mountain_coords is None:
+                mountain_coords = sim.prefs
             positions = project_particles_to_surface(
-                sim.prefs, mountain_landscape,
+                mountain_coords, mountain_landscape,
                 z_scale=params['mountain_z_scale'])
         vbo_pos.write(positions.tobytes())
         vbo_col.write(colors.tobytes())

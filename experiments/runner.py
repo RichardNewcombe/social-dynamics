@@ -128,6 +128,17 @@ SAFE_DEFAULTS = {
     'role_visionary_mean': 0.0,
     'role_visionary_std': 0.0,
     'role_visionary_fraction': 1.0,
+    # Dual-space strategy
+    'strategy_enabled': False,
+    'strategy_k': 3,
+    'pref_strategy_coupling': 0.5,
+    'strategy_step_size': 0.003,
+    'strategy_memory_enabled': False,
+    'strategy_memory_strength': 0.5,
+    'strategy_memory_write_rate': 0.01,
+    'strategy_memory_decay': 0.999,
+    'strategy_memory_blur': False,
+    'strategy_memory_blur_sigma': 1.0,
     # Shadow
     'shadow_sim': False,
     'shadow_show_lines': True,
