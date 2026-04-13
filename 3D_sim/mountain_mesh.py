@@ -12,6 +12,11 @@ The mesh lives in a coordinate system where:
 
 This aligns with the 3D sim's camera convention where Y is the
 vertical (up) axis.
+
+The mesh is a 2D slice of the K-dimensional landscape, with dims
+beyond 0 and 1 fixed at ``other_pref_val`` (default 0).  Particle
+projection uses the same 2D slice so that particles always sit
+exactly on the visible surface.
 """
 
 import numpy as np
@@ -75,6 +80,12 @@ def generate_mountain_mesh(landscape, resolution=64, z_scale=0.5,
     # Build triangle indices
     indices = _build_grid_indices(resolution)
 
+    # Cache the normalization range so project_particles_to_surface uses
+    # the exact same f_min / f_max as the mesh (avoids offset from
+    # different sampling resolutions).
+    lid = id(landscape)
+    _landscape_range_cache[lid] = (float(f_min), float(f_max))
+
     return vertices, normals, colors_fitness, indices, fitness_grid
 
 
@@ -113,12 +124,20 @@ def generate_cost_colors(cost_landscape, landscape_k, resolution=64,
 
 
 # Cache landscape range for project_particles_to_surface to avoid
-# resampling every frame.
+# resampling every frame.  Populated by generate_mountain_mesh so
+# the projection uses the exact same normalization as the mesh.
 _landscape_range_cache = {}
 
 
-def project_particles_to_surface(prefs, landscape, z_scale=0.5):
+def project_particles_to_surface(prefs, landscape, z_scale=0.5,
+                                 other_pref_val=0.0):
     """Project particle preferences onto the mountain surface.
+
+    The mountain mesh is a 2D slice through the K-dimensional landscape
+    (dims 0 and 1 vary; dims 2+ are fixed at ``other_pref_val``).
+    To keep particles exactly on the visible surface, this function
+    evaluates fitness using the same 2D slice — i.e. it replaces dims
+    2+ with ``other_pref_val`` before calling ``landscape.fitness()``.
 
     Coordinate convention matches generate_mountain_mesh:
       X = pref[0], Y = fitness (up), Z = pref[1]
@@ -127,29 +146,33 @@ def project_particles_to_surface(prefs, landscape, z_scale=0.5):
         prefs: (N, k) particle preferences in [-1, 1]
         landscape: landscape with .fitness()
         z_scale: must match the mesh z_scale
+        other_pref_val: must match the mesh other_pref_val
 
     Returns:
         positions_3d: (N, 3) float32 positions on the mountain surface
     """
-    fitness_vals, _ = landscape.fitness(prefs)
+    # Evaluate fitness on the same 2D slice as the mesh:
+    # keep dims 0 and 1 from the particles, zero out dims 2+.
+    k = landscape.k if hasattr(landscape, 'k') else prefs.shape[1]
+    if prefs.shape[1] > 2 or prefs.shape[1] < k:
+        prefs_2d = np.full((len(prefs), k), other_pref_val, dtype=np.float64)
+        prefs_2d[:, 0] = prefs[:, 0]
+        prefs_2d[:, 1] = prefs[:, 1] if prefs.shape[1] > 1 else other_pref_val
+    else:
+        prefs_2d = prefs
 
-    # Use cached range or compute once
+    fitness_vals, _ = landscape.fitness(prefs_2d)
+
+    # Use cached range (set by generate_mountain_mesh) or compute once
     lid = id(landscape)
     if lid not in _landscape_range_cache:
-        if hasattr(landscape, 'heights'):
-            f_min_approx = 0.0
-            f_max_approx = float(landscape.heights.max())
-        else:
-            k = landscape.k if hasattr(landscape, 'k') else prefs.shape[1]
-            _lin = np.linspace(-1.0, 1.0, 50)
-            _gx, _gy = np.meshgrid(_lin, _lin, indexing='ij')
-            _sample = np.full((50 * 50, k), 0.0, dtype=np.float64)
-            _sample[:, 0] = _gx.ravel()
-            _sample[:, 1] = _gy.ravel()
-            _fvals, _ = landscape.fitness(_sample)
-            f_min_approx = float(_fvals.min())
-            f_max_approx = float(_fvals.max())
-        _landscape_range_cache[lid] = (f_min_approx, f_max_approx)
+        _lin = np.linspace(-1.0, 1.0, 64)
+        _gx, _gy = np.meshgrid(_lin, _lin, indexing='ij')
+        _sample = np.full((64 * 64, k), other_pref_val, dtype=np.float64)
+        _sample[:, 0] = _gx.ravel()
+        _sample[:, 1] = _gy.ravel()
+        _fvals, _ = landscape.fitness(_sample)
+        _landscape_range_cache[lid] = (float(_fvals.min()), float(_fvals.max()))
 
     f_min_approx, f_max_approx = _landscape_range_cache[lid]
     f_range = max(f_max_approx - f_min_approx, 1e-8)
@@ -274,4 +297,3 @@ def _colormap_cost(t):
     colors[mask, 2] = 0.0
 
     return colors
-
