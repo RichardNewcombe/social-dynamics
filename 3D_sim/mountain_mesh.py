@@ -125,8 +125,21 @@ def project_particles_to_surface(prefs, landscape, z_scale=0.5):
     """
     fitness_vals, _ = landscape.fitness(prefs)
 
-    f_min_approx = 0.0  # landscapes have non-negative Gaussian peaks
-    f_max_approx = float(landscape.heights.max())  # max peak height
+    # Estimate landscape range robustly (works for any landscape type)
+    if hasattr(landscape, 'heights'):
+        f_min_approx = 0.0
+        f_max_approx = float(landscape.heights.max())
+    else:
+        # Sample a grid to estimate the range
+        k = landscape.k if hasattr(landscape, 'k') else prefs.shape[1]
+        _lin = np.linspace(-1.0, 1.0, 32)
+        _gx, _gy = np.meshgrid(_lin, _lin)
+        _sample = np.zeros((32 * 32, k), dtype=np.float64)
+        _sample[:, 0] = _gx.ravel()
+        _sample[:, 1] = _gy.ravel()
+        _fvals, _ = landscape.fitness(_sample)
+        f_min_approx = float(_fvals.min())
+        f_max_approx = float(_fvals.max())
     f_range = max(f_max_approx - f_min_approx, 1e-8)
 
     z = ((fitness_vals - f_min_approx) / f_range * z_scale).astype(np.float32)

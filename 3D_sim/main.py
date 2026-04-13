@@ -74,6 +74,8 @@ WINDOW_W, WINDOW_H = 0, 0
 
 
 def main():
+    """Main entry point.  Use ``--mountain`` to start with the fitness
+    landscape visible and particles constrained to the surface."""
     # ── Initialize GLFW ──
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW")
@@ -976,4 +978,15 @@ def main():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='3D Particle Simulation')
+    parser.add_argument('--mountain', action='store_true',
+                        help='Start with mountain surface, cost overlay, and '
+                             'mountain mode enabled')
+    args = parser.parse_args()
+    if args.mountain:
+        from .simulation3d import params as _p3d
+        _p3d['show_mountain'] = True
+        _p3d['show_cost_overlay'] = True
+        _p3d['mountain_mode'] = True
     main()
