@@ -1,46 +1,37 @@
-# Experiment 5: The Short Version
+# Experiment 5: Summary
 
-## What It Is
+## Research Question
 
-A simulated company trying to climb a mountain. Nobody has a map. The mountain has fake peaks that look like the top but aren't.
+How does organizational structure affect a team's ability to solve hard problems — and at what cost?
 
-Each person in the company has a **personality** (who they hang out with) and a **strategy** (where they think the company should go). These can overlap a lot (specialists — "I am what I do") or barely at all (generalists — "my team is separate from my work").
+Specifically: when a group of agents with different capabilities must collectively navigate a complex solution space with deceptive local optima, what organizational configurations (team coupling, role distribution, social learning dynamics) produce the best outcomes?
 
-People have different jobs:
+## What We Added to the Simulator
 
-- **Researchers** can sort of tell which way is uphill, but some are better than others. Nobody knows who's accurate — it only shows up in results.
-- **Engineers** can take big or small steps. They don't pick the direction, they just amplify it.
-- **Leaders** are loud. When the team votes on which way to go, leaders' votes count more — whether they're right or not.
-- **Visionaries** can faintly see the real summit. They're rare (5–10% of people) and expensive.
+Two extensions to the core simulation, both opt-in and backward-compatible:
 
-Every step, people chat with their teammates (determined by personality similarity), share their noisy guesses about which way is uphill, and the team moves in the averaged direction. Meanwhile, the company is burning money — both from salaries (expensive people cost more) and from the terrain (some paths are pricier than others).
+**Per-particle roles.** Each agent now has four capability scalars drawn from configurable distributions: gradient sensing accuracy (how well they read the problem), step magnitude (how aggressively they act on information), social influence weight (how much the team listens to them), and solution visibility (a rare ability to sense the global optimum). These interact through team aggregation — agents share noisy observations with their social neighbors, weighted by influence, and the team moves based on the collective signal.
 
-## What Changed in the Simulator
+**Separate identity and strategy vectors.** The existing preference vector (which drives social grouping and team formation) is now decoupled from a new strategy vector (which represents the team's position in the solution space). A coupling parameter controls the overlap: at 1.0 they're identical (what you believe = what you do), at 0.0 they're independent (team identity is separate from problem-solving approach). The social neighbor graph from preference space determines information flow in strategy space — your team is who you share observations with.
 
-Two things were added to the core simulation engine. Everything else is backward-compatible and the old experiments still work.
+## What We've Found So Far
 
-**1. People now have roles.** Four new per-particle arrays (researcher noise, engineer step scale, leader influence, visionary weight). Turned on with `use_particle_roles=True`. When off, everyone is identical — same as before.
+**Decoupling identity from strategy helps.** When team membership is independent of strategic position (low coupling), agents can form stable social groups while still exploring diverse solutions. High coupling locks teams onto whatever local optimum they land on first.
 
-**2. Personality and strategy are now separate.** A new `strategy` vector per particle, independent of the existing `preferences` vector. A coupling parameter (0 to 1) controls how much they overlap at startup. A new `strategy_step()` method runs after the normal social-dynamics step — it uses the social neighbor graph (who's on your team) to aggregate gradient observations and move in strategy space. Turned on with `strategy_enabled=True`. When off, the simulation is unchanged.
+**A few well-placed rare capabilities outperform uniformly capable teams.** A small fraction of agents (5–10%) with strong global sensing, embedded in a flexible organization, produces better cost-adjusted outcomes than expensive teams where everyone has moderate capabilities.
 
-## What It's Shown So Far
+**Social conformity is harmful on complex problems.** It accelerates convergence — onto the wrong answer. The nearest local optimum is usually not the best one.
 
-| Finding | What it means |
-|---|---|
-| Generalists (coupling=0) reach the summit more often than specialists (coupling=1) | When your team identity locks your strategy, you get stuck on whatever peak your team landed on. Separating them lets strategy evolve freely. |
-| Rare visionaries + generalist structure is the most cost-efficient combo | A few people who can see the summit, embedded in a flexible org, outperform expensive teams of all-stars. |
-| Social conformity hurts on rugged landscapes | Herding everyone onto the nearest peak is fast but wrong. The nearest peak usually isn't the highest. |
-| Social differentiation avoids traps but can't converge | Pushing people apart prevents getting stuck, but nobody reaches the top either. |
-| The knowledge memory field doesn't help yet | Institutional knowledge is currently encoding early noise, not useful information. |
+**Social differentiation avoids bad answers but can't find good ones.** Pushing agents apart prevents premature convergence but also prevents the coordination needed to reach the global optimum.
 
 ## Gaps
 
-**The landscape is still too easy for visionaries.** A visionary ignores the terrain and walks straight toward the summit. Until the cost ridges or landscape geometry make that straight-line path genuinely punishing, visionaries will always win. The landscape needs narrow corridors or impassable ridges that force detours.
+**The solution landscape needs more structure.** Agents with global sensing still solve too easily by ignoring local information entirely. The landscape should force routing decisions where local knowledge matters.
 
-**Cost doesn't constrain behavior.** Money is tracked but never runs out. Adding a hard budget ("you have $X, simulation ends when it's spent") would force real tradeoffs instead of just reporting them.
+**Cost is tracked but not binding.** There's no budget constraint, so expensive configurations always win if given enough time. A finite budget would force genuine tradeoffs in team composition.
 
-**Teams aren't forming.** DBSCAN finds zero preference-space clusters in most conditions. Either the social learning rate is too low, the run is too short, or the clustering threshold needs tuning. Without visible teams, the "team structure drives strategy" story is theoretical — the neighbor graph exists but it's not producing coherent groups.
+**Team formation is weak.** The social dynamics aren't producing visible clusters in most conditions. Without coherent teams, the "team structure drives problem-solving" hypothesis is only partially testable.
 
-**The visionary rarity constraint needs more exploration.** We've tested 5% and 10% fractions. The interesting question is: what's the minimum number of visionaries an org needs? One? Five? Is there a phase transition?
+**Role distribution is underexplored.** We've tested a few configurations but haven't mapped the space. Key questions: what's the minimum fraction of globally-sensing agents needed? Is there a phase transition? How does the answer change with problem complexity?
 
-**Coupling is static.** Real orgs start generalist and specialize over time. A dynamic coupling that increases as fitness improves would model organizational maturation and might reveal when specialization helps vs. hurts.
+**Coupling is static.** Real organizations adapt their structure over time. Dynamic coupling — starting flexible and specializing as the team learns — may outperform any fixed configuration.
