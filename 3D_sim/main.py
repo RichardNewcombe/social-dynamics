@@ -479,6 +479,37 @@ def main():
             reuse = params['reuse_neighbors']
             for sub in range(spf):
                 sim.step(reuse_neighbors=(reuse and sub > 0))
+                # Mountain mode: apply gradient nudge on prefs so particles
+                # navigate the fitness landscape (without this, prefs are
+                # static unless social != 0)
+                if params['mountain_mode'] and mountain_landscape is not None:
+                    grad, _, _ = mountain_landscape.gradient(sim.prefs)
+                    # Add per-particle noise (researcher accuracy)
+                    noise_scale = getattr(sim, 'role_gradient_noise', None)
+                    if noise_scale is not None:
+                        noise = np.random.randn(*grad.shape) * noise_scale[:, None]
+                        grad = grad + noise
+                        norms = np.linalg.norm(grad, axis=1, keepdims=True)
+                        grad = grad / np.maximum(norms, 1e-12)
+                    # Visionary blend toward global summit (centers[0])
+                    vis = getattr(sim, 'role_visionary', None)
+                    if vis is not None and vis.max() > 0:
+                        summit = mountain_landscape.centers[0][:sim.prefs.shape[1]]
+                        to_summit = summit[None, :] - sim.prefs
+                        ts_norm = np.linalg.norm(to_summit, axis=1, keepdims=True)
+                        to_summit = to_summit / np.maximum(ts_norm, 1e-12)
+                        v = vis[:, None]
+                        grad = (1.0 - v) * grad + v * to_summit
+                        norms = np.linalg.norm(grad, axis=1, keepdims=True)
+                        grad = grad / np.maximum(norms, 1e-12)
+                    # Apply nudge scaled by step_size and engineer factor
+                    step_scale = getattr(sim, 'role_step_scale', None)
+                    nudge_strength = 0.003
+                    if step_scale is not None:
+                        sim.prefs += nudge_strength * step_scale[:, None] * grad
+                    else:
+                        sim.prefs += nudge_strength * grad
+                    np.clip(sim.prefs, -1.0, 1.0, out=sim.prefs)
         t_sim = time.perf_counter() - t0
 
         # ── Upload particle data to GPU ──
@@ -599,8 +630,8 @@ def main():
         if params['show_mountain'] and vao_mountain is not None:
             ctx.enable(moderngl.BLEND)
             ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-            # Light from upper-right
-            light_dir = np.array([0.4, 0.3, 0.8], dtype='f4')
+            # Light from above-right (Y is up)
+            light_dir = np.array([0.4, 0.8, 0.3], dtype='f4')
             light_dir /= np.linalg.norm(light_dir)
             prog_mesh['mvp'].write(mvp_bytes)
             prog_mesh['alpha'] = params['mountain_alpha']
@@ -611,7 +642,7 @@ def main():
         if params['show_cost_overlay'] and vao_cost is not None:
             ctx.enable(moderngl.BLEND)
             ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-            light_dir = np.array([0.4, 0.3, 0.8], dtype='f4')
+            light_dir = np.array([0.4, 0.8, 0.3], dtype='f4')
             light_dir /= np.linalg.norm(light_dir)
             prog_mesh['mvp'].write(mvp_bytes)
             prog_mesh['alpha'] = params['cost_alpha']

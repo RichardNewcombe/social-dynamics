@@ -2,15 +2,16 @@
 Mountain Mesh Generation
 ========================
 
-Samples a GaussianPeakLandscape (and optionally a CostLandscape) into
+Samples a fitness landscape (and optionally a CostLandscape) into
 a triangle mesh suitable for ModernGL rendering.
 
 The mesh lives in a coordinate system where:
   X = pref[0]  mapped from [-1, 1] → [0, 1]
-  Y = pref[1]  mapped from [-1, 1] → [0, 1]
-  Z = fitness   scaled to fit within [0, z_scale]
+  Y = fitness   scaled to fit within [0, z_scale]   (UP axis)
+  Z = pref[1]  mapped from [-1, 1] → [0, 1]
 
-This aligns with the 3D sim's [0, 1]^3 unit cube convention.
+This aligns with the 3D sim's camera convention where Y is the
+vertical (up) axis.
 """
 
 import numpy as np
@@ -18,20 +19,19 @@ import numpy as np
 
 def generate_mountain_mesh(landscape, resolution=64, z_scale=0.5,
                            pref_dims=2, other_pref_val=0.0):
-    """Sample a GaussianPeakLandscape into a triangle mesh.
+    """Sample a fitness landscape into a triangle mesh.
 
     Args:
-        landscape: GaussianPeakLandscape instance with .fitness() and .k
+        landscape: landscape instance with .fitness() and .k
         resolution: grid resolution (vertices per side)
-        z_scale: maximum Z height for the mesh
-        pref_dims: number of preference dimensions (uses first 2 for XY)
+        z_scale: maximum Y height for the mesh
+        pref_dims: number of preference dimensions (uses first 2 for XZ)
         other_pref_val: value for pref dims beyond 0 and 1
 
     Returns:
-        vertices: (N_verts, 3) float32 positions
+        vertices: (N_verts, 3) float32 positions  [X, Y, Z]
         normals: (N_verts, 3) float32 normals
         colors_fitness: (N_verts, 3) float32 RGB colors based on fitness
-        colors_cost: (N_verts, 3) float32 RGB colors based on cost (if cost_landscape given)
         indices: (N_tris * 3,) uint32 triangle indices
         fitness_grid: (resolution, resolution) float32 raw fitness values
     """
@@ -39,7 +39,7 @@ def generate_mountain_mesh(landscape, resolution=64, z_scale=0.5,
 
     # Sample grid in preference space [-1, 1]^2
     lin = np.linspace(-1.0, 1.0, resolution)
-    gx, gy = np.meshgrid(lin, lin)  # (res, res) each
+    gx, gy = np.meshgrid(lin, lin, indexing='ij')  # gx varies along axis 0
 
     # Build preference array: (res*res, k)
     n_pts = resolution * resolution
@@ -55,13 +55,13 @@ def generate_mountain_mesh(landscape, resolution=64, z_scale=0.5,
     f_min = fitness_vals.min()
     f_max = fitness_vals.max()
     f_range = max(f_max - f_min, 1e-8)
-    z_vals = ((fitness_vals - f_min) / f_range * z_scale).astype(np.float32)
+    y_vals = ((fitness_vals - f_min) / f_range * z_scale).astype(np.float32)
 
     # Map pref coords to [0, 1] to match unit cube
-    x_vals = ((gx.ravel() + 1.0) * 0.5).astype(np.float32)
-    y_vals = ((gy.ravel() + 1.0) * 0.5).astype(np.float32)
+    x_vals = ((gx.ravel() + 1.0) * 0.5).astype(np.float32)  # pref[0] → X
+    z_vals = ((gy.ravel() + 1.0) * 0.5).astype(np.float32)  # pref[1] → Z
 
-    # Build vertices (N, 3)
+    # Build vertices (N, 3): X = pref[0], Y = fitness (up), Z = pref[1]
     vertices = np.column_stack([x_vals, y_vals, z_vals]).astype(np.float32)
 
     # Compute normals via finite differences on the grid
@@ -93,7 +93,7 @@ def generate_cost_colors(cost_landscape, landscape_k, resolution=64,
         cost_grid: (resolution, resolution) float32 raw cost values
     """
     lin = np.linspace(-1.0, 1.0, resolution)
-    gx, gy = np.meshgrid(lin, lin)
+    gx, gy = np.meshgrid(lin, lin, indexing='ij')
     n_pts = resolution * resolution
     prefs = np.full((n_pts, landscape_k), other_pref_val, dtype=np.float64)
     prefs[:, 0] = gx.ravel()
@@ -112,12 +112,20 @@ def generate_cost_colors(cost_landscape, landscape_k, resolution=64,
     return colors_cost, cost_grid
 
 
+# Cache landscape range for project_particles_to_surface to avoid
+# resampling every frame.
+_landscape_range_cache = {}
+
+
 def project_particles_to_surface(prefs, landscape, z_scale=0.5):
     """Project particle preferences onto the mountain surface.
 
+    Coordinate convention matches generate_mountain_mesh:
+      X = pref[0], Y = fitness (up), Z = pref[1]
+
     Args:
         prefs: (N, k) particle preferences in [-1, 1]
-        landscape: GaussianPeakLandscape
+        landscape: landscape with .fitness()
         z_scale: must match the mesh z_scale
 
     Returns:
@@ -125,28 +133,32 @@ def project_particles_to_surface(prefs, landscape, z_scale=0.5):
     """
     fitness_vals, _ = landscape.fitness(prefs)
 
-    # Estimate landscape range robustly (works for any landscape type)
-    if hasattr(landscape, 'heights'):
-        f_min_approx = 0.0
-        f_max_approx = float(landscape.heights.max())
-    else:
-        # Sample a grid to estimate the range
-        k = landscape.k if hasattr(landscape, 'k') else prefs.shape[1]
-        _lin = np.linspace(-1.0, 1.0, 32)
-        _gx, _gy = np.meshgrid(_lin, _lin)
-        _sample = np.zeros((32 * 32, k), dtype=np.float64)
-        _sample[:, 0] = _gx.ravel()
-        _sample[:, 1] = _gy.ravel()
-        _fvals, _ = landscape.fitness(_sample)
-        f_min_approx = float(_fvals.min())
-        f_max_approx = float(_fvals.max())
+    # Use cached range or compute once
+    lid = id(landscape)
+    if lid not in _landscape_range_cache:
+        if hasattr(landscape, 'heights'):
+            f_min_approx = 0.0
+            f_max_approx = float(landscape.heights.max())
+        else:
+            k = landscape.k if hasattr(landscape, 'k') else prefs.shape[1]
+            _lin = np.linspace(-1.0, 1.0, 50)
+            _gx, _gy = np.meshgrid(_lin, _lin, indexing='ij')
+            _sample = np.full((50 * 50, k), 0.0, dtype=np.float64)
+            _sample[:, 0] = _gx.ravel()
+            _sample[:, 1] = _gy.ravel()
+            _fvals, _ = landscape.fitness(_sample)
+            f_min_approx = float(_fvals.min())
+            f_max_approx = float(_fvals.max())
+        _landscape_range_cache[lid] = (f_min_approx, f_max_approx)
+
+    f_min_approx, f_max_approx = _landscape_range_cache[lid]
     f_range = max(f_max_approx - f_min_approx, 1e-8)
 
-    z = ((fitness_vals - f_min_approx) / f_range * z_scale).astype(np.float32)
-    z = np.clip(z, 0, z_scale)
-
+    # X = pref[0], Y = fitness (up), Z = pref[1]
     x = ((prefs[:, 0] + 1.0) * 0.5).astype(np.float32)
-    y = ((prefs[:, 1] + 1.0) * 0.5).astype(np.float32)
+    y = ((fitness_vals - f_min_approx) / f_range * z_scale).astype(np.float32)
+    y = np.clip(y, 0, z_scale)
+    z = ((prefs[:, 1] + 1.0) * 0.5).astype(np.float32)
 
     return np.column_stack([x, y, z])
 
@@ -157,28 +169,27 @@ def _compute_grid_normals(grid_pos):
     Uses central differences for interior, forward/backward at edges.
     """
     res = grid_pos.shape[0]
-    normals = np.zeros_like(grid_pos)
 
     # Partial derivatives
-    # dx: along axis 1 (columns = X direction)
-    dx = np.zeros_like(grid_pos)
-    dx[:, 1:-1] = grid_pos[:, 2:] - grid_pos[:, :-2]
-    dx[:, 0] = grid_pos[:, 1] - grid_pos[:, 0]
-    dx[:, -1] = grid_pos[:, -1] - grid_pos[:, -2]
+    # du: along axis 0 (X / pref[0] direction)
+    du = np.zeros_like(grid_pos)
+    du[1:-1, :] = grid_pos[2:, :] - grid_pos[:-2, :]
+    du[0, :] = grid_pos[1, :] - grid_pos[0, :]
+    du[-1, :] = grid_pos[-1, :] - grid_pos[-2, :]
 
-    # dy: along axis 0 (rows = Y direction)
-    dy = np.zeros_like(grid_pos)
-    dy[1:-1, :] = grid_pos[2:, :] - grid_pos[:-2, :]
-    dy[0, :] = grid_pos[1, :] - grid_pos[0, :]
-    dy[-1, :] = grid_pos[-1, :] - grid_pos[-2, :]
+    # dv: along axis 1 (Z / pref[1] direction)
+    dv = np.zeros_like(grid_pos)
+    dv[:, 1:-1] = grid_pos[:, 2:] - grid_pos[:, :-2]
+    dv[:, 0] = grid_pos[:, 1] - grid_pos[:, 0]
+    dv[:, -1] = grid_pos[:, -1] - grid_pos[:, -2]
 
-    # Normal = cross(dx, dy), then normalize
-    normals = np.cross(dx.reshape(-1, 3), dy.reshape(-1, 3))
+    # Normal = cross(du, dv), then normalize
+    normals = np.cross(du.reshape(-1, 3), dv.reshape(-1, 3))
     norms = np.linalg.norm(normals, axis=1, keepdims=True)
     normals = normals / np.maximum(norms, 1e-8)
 
-    # Ensure normals point "up" (positive Z)
-    flip = normals[:, 2] < 0
+    # Ensure normals point "up" (positive Y)
+    flip = normals[:, 1] < 0
     normals[flip] *= -1
 
     return normals.reshape(res, res, 3)
@@ -263,3 +274,4 @@ def _colormap_cost(t):
     colors[mask, 2] = 0.0
 
     return colors
+
