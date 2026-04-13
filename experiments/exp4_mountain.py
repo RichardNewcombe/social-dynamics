@@ -328,12 +328,24 @@ def main():
 
     print(f"=== Experiment 4: Mountain Climbing with Cost ===")
     print(f"Fitness landscape: {LANDSCAPE.n_peaks} peaks")
-    for i, p in enumerate(LANDSCAPE.centers):
-        h = LANDSCAPE.heights[i]
-        s = LANDSCAPE.sigmas[i]
-        label = "GLOBAL" if i == 0 else f"local {i}"
-        print(f"  Peak {i} ({label}): center={p}, height={h:.2f}, "
-              f"sigma={s:.2f}")
+    if hasattr(LANDSCAPE, 'major_centers'):
+        # RuggedLandscape — print major peaks only
+        for i in range(LANDSCAPE.n_major):
+            p = LANDSCAPE.major_centers[i]
+            h = LANDSCAPE.major_heights[i]
+            s = LANDSCAPE.major_sigmas[i]
+            label = "GLOBAL" if i == 0 else f"local {i}"
+            print(f"  Major {i} ({label}): center={np.round(p,2)}, "
+                  f"height={h:.2f}, sigma={s:.2f}")
+        print(f"  + {LANDSCAPE.n_minor} minor peaks, "
+              f"{len(LANDSCAPE.noise_freqs)} noise frequencies")
+    else:
+        for i, p in enumerate(LANDSCAPE.centers):
+            h = LANDSCAPE.heights[i]
+            s = LANDSCAPE.sigmas[i]
+            label = "GLOBAL" if i == 0 else f"local {i}"
+            print(f"  Peak {i} ({label}): center={p}, height={h:.2f}, "
+                  f"sigma={s:.2f}")
     print(f"Cost landscape: {COST_LANDSCAPE.n_ridges} ridges, "
           f"base_cost={COST_LANDSCAPE.base_cost}")
     print(f"Gradient strength: {GRADIENT_STRENGTH}")

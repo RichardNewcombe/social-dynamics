@@ -287,12 +287,23 @@ def main():
 
     print(f"=== Experiment 5: Dual-Space Mountain Climbing ===")
     print(f"Fitness landscape: {LANDSCAPE.n_peaks} peaks")
-    for i, p in enumerate(LANDSCAPE.centers):
-        h = LANDSCAPE.heights[i]
-        s = LANDSCAPE.sigmas[i]
-        label_str = "GLOBAL" if i == 0 else f"local {i}"
-        print(f"  Peak {i} ({label_str}): center={p}, height={h:.2f}, "
-              f"sigma={s:.2f}")
+    if hasattr(LANDSCAPE, 'major_centers'):
+        for i in range(LANDSCAPE.n_major):
+            p = LANDSCAPE.major_centers[i]
+            h = LANDSCAPE.major_heights[i]
+            s = LANDSCAPE.major_sigmas[i]
+            label_str = "GLOBAL" if i == 0 else f"local {i}"
+            print(f"  Major {i} ({label_str}): center={np.round(p,2)}, "
+                  f"height={h:.2f}, sigma={s:.2f}")
+        print(f"  + {LANDSCAPE.n_minor} minor peaks, "
+              f"{len(LANDSCAPE.noise_freqs)} noise frequencies")
+    else:
+        for i, p in enumerate(LANDSCAPE.centers):
+            h = LANDSCAPE.heights[i]
+            s = LANDSCAPE.sigmas[i]
+            label_str = "GLOBAL" if i == 0 else f"local {i}"
+            print(f"  Peak {i} ({label_str}): center={p}, height={h:.2f}, "
+                  f"sigma={s:.2f}")
     print(f"Cost landscape: {COST_LANDSCAPE.n_ridges} ridges, "
           f"base_cost={COST_LANDSCAPE.base_cost}")
     print(f"Summit radius: {SUMMIT_RADIUS}")
