@@ -488,43 +488,43 @@ def main():
             reuse = params['reuse_neighbors']
             for sub in range(spf):
                 sim.step(reuse_neighbors=(reuse and sub > 0))
-                # Mountain mode: apply gradient nudge on prefs so particles
-                # navigate the fitness landscape (without this, prefs are
-                # static unless social != 0)
+                # Mountain mode: Phase 2 — team-aggregated mountain
+                # navigation in strategy space (like Experiment 5).
+                # sim.step() above handled Phase 1 (social dynamics in
+                # preference space, building the neighbor graph).
                 if params['mountain_mode'] and mountain_landscape is not None:
-                    grad, _, _ = mountain_landscape.gradient(sim.prefs)
-                    # Add per-particle noise (researcher accuracy)
-                    noise_scale = getattr(sim, 'role_gradient_noise', None)
-                    if noise_scale is not None:
-                        noise = np.random.randn(*grad.shape) * noise_scale[:, None]
+                    if sim.strategy is not None:
+                        # Dual-space: navigate in strategy space
+                        summit = mountain_landscape.centers[0][:sim.strategy_k]
+                        sim.strategy_step(
+                            gradient_fn=mountain_landscape.gradient,
+                            summit_center=summit)
+                        mountain_coords = sim.strategy
+                    else:
+                        # Fallback (strategy_enabled=False): nudge prefs
+                        # directly (original Exp 4 behaviour)
+                        grad, _, _ = mountain_landscape.gradient(sim.prefs)
+                        noise = sim.rng.normal(0, 1, grad.shape)
+                        noise *= sim.role_gradient_noise[:, None]
                         grad = grad + noise
                         norms = np.linalg.norm(grad, axis=1, keepdims=True)
                         grad = grad / np.maximum(norms, 1e-12)
-                    # Visionary blend toward global summit (centers[0])
-                    vis = getattr(sim, 'role_visionary', None)
-                    if vis is not None and vis.max() > 0:
-                        summit = mountain_landscape.centers[0][:sim.prefs.shape[1]]
-                        to_summit = summit[None, :] - sim.prefs
-                        ts_norm = np.linalg.norm(to_summit, axis=1, keepdims=True)
-                        to_summit = to_summit / np.maximum(ts_norm, 1e-12)
-                        v = vis[:, None]
-                        grad = (1.0 - v) * grad + v * to_summit
-                        norms = np.linalg.norm(grad, axis=1, keepdims=True)
-                        grad = grad / np.maximum(norms, 1e-12)
-                    # Apply nudge scaled by step_size and engineer factor
-                    step_scale = getattr(sim, 'role_step_scale', None)
-                    nudge_strength = 0.003
-                    if step_scale is not None:
-                        sim.prefs += nudge_strength * step_scale[:, None] * grad
-                    else:
-                        sim.prefs += nudge_strength * grad
-                    np.clip(sim.prefs, -1.0, 1.0, out=sim.prefs)
-                    # Sync sim.pos to mountain-surface positions so that
-                    # spatial neighbor finding operates on the mountain,
-                    # not in the free-floating toroidal 3D space.
-                    mountain_coords = getattr(sim, 'strategy', None)
-                    if mountain_coords is None:
+                        vis = sim.role_visionary
+                        if vis.max() > 0:
+                            summit = mountain_landscape.centers[0][:sim.prefs.shape[1]]
+                            to_summit = summit[None, :] - sim.prefs
+                            ts_norm = np.linalg.norm(to_summit, axis=1, keepdims=True)
+                            to_summit = to_summit / np.maximum(ts_norm, 1e-12)
+                            v = vis[:, None]
+                            grad = (1.0 - v) * grad + v * to_summit
+                            norms = np.linalg.norm(grad, axis=1, keepdims=True)
+                            grad = grad / np.maximum(norms, 1e-12)
+                        nudge_strength = params.get('strategy_step_size', 0.003)
+                        sim.prefs += nudge_strength * sim.role_step_scale[:, None] * grad
+                        np.clip(sim.prefs, -1.0, 1.0, out=sim.prefs)
                         mountain_coords = sim.prefs
+                    # Sync sim.pos to mountain-surface positions so that
+                    # spatial neighbor finding operates on the mountain.
                     projected = project_particles_to_surface(
                         mountain_coords, mountain_landscape,
                         z_scale=params['mountain_z_scale'])
@@ -839,6 +839,56 @@ def main():
                 if changed:
                     params['mountain_resolution'] = v
                     build_mountain_mesh()
+
+                # ── Dual-space controls ──
+                imgui.spacing()
+                imgui.text("Dual-Space (Strategy)")
+                changed, v = imgui.checkbox("Strategy Enabled", params['strategy_enabled'])
+                if changed:
+                    params['strategy_enabled'] = v
+                    do_reset()  # re-init strategy arrays
+                if params['strategy_enabled']:
+                    changed, v = imgui.drag_float("Coupling", params['pref_strategy_coupling'],
+                                                  0.01, 0.0, 1.0, "%.2f")
+                    if changed:
+                        params['pref_strategy_coupling'] = v
+                    changed, v = imgui.drag_float("Strat Step", params['strategy_step_size'],
+                                                  0.0005, 0.0005, 0.02, "%.4f")
+                    if changed:
+                        params['strategy_step_size'] = v
+
+                # ── Role controls ──
+                imgui.spacing()
+                imgui.text("Particle Roles")
+                changed, v = imgui.checkbox("Use Roles", params['use_particle_roles'])
+                if changed:
+                    params['use_particle_roles'] = v
+                    do_reset()
+                if params['use_particle_roles']:
+                    changed, v = imgui.drag_float("Influence Std", params['role_influence_std'],
+                                                  0.01, 0.0, 2.0, "%.2f")
+                    if changed:
+                        params['role_influence_std'] = v
+                    changed, v = imgui.drag_float("Step Scale Std", params['role_step_scale_std'],
+                                                  0.01, 0.0, 2.0, "%.2f")
+                    if changed:
+                        params['role_step_scale_std'] = v
+                    changed, v = imgui.drag_float("Grad Noise Mean", params['role_gradient_noise_mean'],
+                                                  0.01, 0.0, 2.0, "%.2f")
+                    if changed:
+                        params['role_gradient_noise_mean'] = v
+                    changed, v = imgui.drag_float("Grad Noise Std", params['role_gradient_noise_std'],
+                                                  0.01, 0.0, 1.0, "%.2f")
+                    if changed:
+                        params['role_gradient_noise_std'] = v
+                    changed, v = imgui.drag_float("Visionary Mean", params['role_visionary_mean'],
+                                                  0.01, 0.0, 1.0, "%.2f")
+                    if changed:
+                        params['role_visionary_mean'] = v
+                    changed, v = imgui.drag_float("Visionary Std", params['role_visionary_std'],
+                                                  0.01, 0.0, 0.5, "%.2f")
+                    if changed:
+                        params['role_visionary_std'] = v
             imgui.separator()
 
         # ── Live parameters ──
@@ -1034,4 +1084,15 @@ if __name__ == '__main__':
         _p3d['show_mountain'] = True
         _p3d['show_cost_overlay'] = True
         _p3d['mountain_mode'] = True
+        # Enable dual-space: strategy separate from preferences (Exp 5)
+        _p3d['strategy_enabled'] = True
+        _p3d['strategy_k'] = _p3d['k']
+        _p3d['pref_strategy_coupling'] = 0.5
+        _p3d['use_particle_roles'] = True
+        _p3d['role_influence_std'] = 0.8
+        _p3d['role_step_scale_std'] = 0.5
+        _p3d['role_gradient_noise_mean'] = 0.5
+        _p3d['role_gradient_noise_std'] = 0.2
+        _p3d['role_visionary_mean'] = 0.05
+        _p3d['role_visionary_std'] = 0.03
     main()
