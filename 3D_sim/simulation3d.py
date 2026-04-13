@@ -85,6 +85,10 @@ params = dict(
     strategy_memory_decay=0.999,     # knowledge field decay per step
     strategy_memory_blur=False,      # apply Gaussian blur to knowledge field
     strategy_memory_blur_sigma=1.0,  # blur sigma for knowledge field
+    strategy_momentum=0.3,           # momentum: blend with previous direction
+    cost_weight=0.1,                 # weight of cost gradient in movement decisions
+    explore_probability=0.005,       # per-step probability of random exploration jump
+    explore_radius=0.15,             # max radius of exploration jumps
     # ── Per-particle roles ──
     use_particle_roles=False,        # enable per-particle step/influence scaling
     role_step_scale_std=0.0,         # std of log-normal step-scale distribution
@@ -589,12 +593,19 @@ class Simulation:
 
     # ── Strategy step (Phase 2: mountain navigation) ───────────────
 
-    def strategy_step(self, gradient_fn=None, summit_center=None):
+    def strategy_step(self, gradient_fn=None, summit_center=None,
+                      cost_landscape=None):
         """Phase 2: team-aggregated mountain navigation in strategy space.
 
         Called after sim.step() handles social dynamics.  Uses the
         preference-space neighbor graph (self.nbr_ids) to aggregate
         gradient observations across team members.
+
+        Key features:
+        - Cost-aware movement: effective gradient = fitness_grad - cost_weight * cost_grad
+        - High gradient noise: individuals get unreliable signals, teams average them out
+        - Exploration perturbation: random jumps to escape local optima
+        - Momentum: good directions persist across steps
         """
         if self.strategy is None or gradient_fn is None:
             return
@@ -607,13 +618,31 @@ class Simulation:
         valid = self._valid_mask
         has_mask = valid is not None
 
-        # 1. Each particle senses the gradient with researcher noise
+        # 1. Each particle senses the fitness gradient with researcher noise
         grad_unit, fitness, peak_ids = gradient_fn(self.strategy)
-        noise = self.rng.normal(0, 1, grad_unit.shape)
+
+        # 1b. Cost-aware gradient: steer away from expensive regions
+        cost_weight = params.get('cost_weight', 0.3)
+        if cost_landscape is not None and cost_weight > 0:
+            cost_grad, cost_vals = cost_landscape.cost_gradient(self.strategy)
+            # cost_grad points uphill in cost; subtract to avoid expensive regions
+            effective_grad = grad_unit - cost_weight * cost_grad
+            # Re-normalize
+            eg_norms = np.linalg.norm(effective_grad, axis=1, keepdims=True)
+            effective_grad = effective_grad / np.maximum(eg_norms, 1e-12)
+        else:
+            effective_grad = grad_unit
+
+        # 1c. Add researcher noise (high noise = individuals are nearly blind)
+        #     IMPORTANT: do NOT normalize before aggregation!  The noise
+        #     is additive to the unit gradient.  When we average N noisy
+        #     observations, the signal (unit vector) stays constant while
+        #     the noise (zero-mean) cancels by sqrt(N).  If we normalized
+        #     first, every observation would be unit-length and averaging
+        #     would not reduce noise.
+        noise = self.rng.normal(0, 1, effective_grad.shape)
         noise *= self.role_gradient_noise[:, None]
-        noisy_grad = grad_unit + noise
-        norms = np.linalg.norm(noisy_grad, axis=1, keepdims=True)
-        noisy_grad = noisy_grad / np.maximum(norms, 1e-12)
+        noisy_obs = effective_grad + noise  # NOT normalized
 
         # 2. Visionary blend toward global summit
         if summit_center is not None:
@@ -621,29 +650,54 @@ class Simulation:
             s_norms = np.linalg.norm(to_summit, axis=1, keepdims=True)
             summit_dir = to_summit / np.maximum(s_norms, 1e-12)
             v = self.role_visionary[:, None]
-            noisy_grad = (1.0 - v) * noisy_grad + v * summit_dir
-            norms = np.linalg.norm(noisy_grad, axis=1, keepdims=True)
-            noisy_grad = noisy_grad / np.maximum(norms, 1e-12)
+            noisy_obs = (1.0 - v) * noisy_obs + v * summit_dir
 
         # 3. Team aggregation: weight by leader influence
-        nbr_grads = noisy_grad[nbr_ids]
+        #    This is THE key mechanism for group advantage:
+        #    N noisy observations averaged → noise reduces by sqrt(N)
+        #    because noise is zero-mean and signal is coherent.
+        nbr_obs = noisy_obs[nbr_ids]  # (N, n_nbr, K)
         inf_weights = self.role_influence[nbr_ids]
         if has_mask:
             inf_weights = inf_weights * valid
         w_sum = inf_weights.sum(axis=1, keepdims=True)
         w_norm = inf_weights / np.maximum(w_sum, 1e-10)
-        team_grad = (nbr_grads * w_norm[:, :, None]).sum(axis=1)
+        team_obs = (nbr_obs * w_norm[:, :, None]).sum(axis=1)  # (N, K)
 
         # Include own observation (self-weight = 1.0)
-        team_grad = 0.5 * noisy_grad + 0.5 * team_grad
+        team_grad = 0.5 * noisy_obs + 0.5 * team_obs
+
+        # NOW normalize to get direction
         t_norms = np.linalg.norm(team_grad, axis=1, keepdims=True)
         team_grad = team_grad / np.maximum(t_norms, 1e-12)
+
+        # 3b. Momentum: blend with previous direction for persistence
+        momentum = params.get('strategy_momentum', 0.3)
+        if hasattr(self, '_prev_team_grad') and self._prev_team_grad is not None:
+            team_grad = (1.0 - momentum) * team_grad + momentum * self._prev_team_grad
+            t_norms = np.linalg.norm(team_grad, axis=1, keepdims=True)
+            team_grad = team_grad / np.maximum(t_norms, 1e-12)
+        self._prev_team_grad = team_grad.copy()
 
         # 4. Move in strategy space (engineer step scale)
         strat_step = params.get('strategy_step_size', 0.003)
         step_mag = strat_step * self.role_step_scale
         self.strategy = np.clip(
             self.strategy + step_mag[:, None] * team_grad, -1, 1)
+
+        # 4b. Exploration perturbation: random jumps to escape local optima
+        explore_prob = params.get('explore_probability', 0.005)
+        explore_radius = params.get('explore_radius', 0.15)
+        if explore_prob > 0:
+            jumpers = self.rng.random(n) < explore_prob
+            n_jump = jumpers.sum()
+            if n_jump > 0:
+                jump_dir = self.rng.normal(0, 1, (n_jump, k_s))
+                jn = np.linalg.norm(jump_dir, axis=1, keepdims=True)
+                jump_dir = jump_dir / np.maximum(jn, 1e-12)
+                jump_dist = self.rng.uniform(0, explore_radius, (n_jump, 1))
+                self.strategy[jumpers] = np.clip(
+                    self.strategy[jumpers] + jump_dist * jump_dir, -1, 1)
 
         # 5. Strategy memory field
         if (self.strategy_memory is not None and

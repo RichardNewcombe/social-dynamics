@@ -498,7 +498,8 @@ def main():
                         summit = mountain_landscape.centers[0][:sim.strategy_k]
                         sim.strategy_step(
                             gradient_fn=mountain_landscape.gradient,
-                            summit_center=summit)
+                            summit_center=summit,
+                            cost_landscape=cost_landscape)
                         mountain_coords = sim.strategy
                     else:
                         # Fallback (strategy_enabled=False): nudge prefs
@@ -856,6 +857,22 @@ def main():
                                                   0.0005, 0.0005, 0.02, "%.4f")
                     if changed:
                         params['strategy_step_size'] = v
+                    changed, v = imgui.drag_float("Cost Weight", params['cost_weight'],
+                                                  0.01, 0.0, 2.0, "%.2f")
+                    if changed:
+                        params['cost_weight'] = v
+                    changed, v = imgui.drag_float("Momentum", params['strategy_momentum'],
+                                                  0.01, 0.0, 0.95, "%.2f")
+                    if changed:
+                        params['strategy_momentum'] = v
+                    changed, v = imgui.drag_float("Explore Prob", params['explore_probability'],
+                                                  0.001, 0.0, 0.05, "%.3f")
+                    if changed:
+                        params['explore_probability'] = v
+                    changed, v = imgui.drag_float("Explore Radius", params['explore_radius'],
+                                                  0.01, 0.0, 0.5, "%.2f")
+                    if changed:
+                        params['explore_radius'] = v
 
                 # ── Role controls ──
                 imgui.spacing()
@@ -1091,8 +1108,17 @@ if __name__ == '__main__':
         _p3d['use_particle_roles'] = True
         _p3d['role_influence_std'] = 0.8
         _p3d['role_step_scale_std'] = 0.5
-        _p3d['role_gradient_noise_mean'] = 0.5
-        _p3d['role_gradient_noise_std'] = 0.2
+        # High gradient noise: individuals are nearly blind,
+        # teams of ~20 reduce noise by sqrt(20) ≈ 4.5x
+        _p3d['role_gradient_noise_mean'] = 2.0
+        _p3d['role_gradient_noise_std'] = 0.5
         _p3d['role_visionary_mean'] = 0.05
         _p3d['role_visionary_std'] = 0.03
+        # Cost-aware movement
+        _p3d['cost_weight'] = 0.3
+        # Momentum for path persistence
+        _p3d['strategy_momentum'] = 0.3
+        # Exploration perturbation
+        _p3d['explore_probability'] = 0.005
+        _p3d['explore_radius'] = 0.15
     main()

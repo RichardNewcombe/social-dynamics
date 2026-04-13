@@ -103,8 +103,8 @@ class CostLandscape:
     the idea that some paths through strategy space are more expensive
     than others (regulatory hurdles, infrastructure investment, etc.).
 
-    Implemented as a sum of Gaussian bumps (cost ridges) plus a base cost.
-    High-cost regions are expensive to traverse; low-cost regions are cheap.
+    Implemented as Gaussian cost ridges + optional high-frequency spectral
+    noise that creates narrow cheap corridors through expensive terrain.
 
     Parameters
     ----------
@@ -115,9 +115,12 @@ class CostLandscape:
         Number of preference dimensions.
     base_cost : float
         Minimum per-step terrain cost everywhere.  Default 0.1.
+    noise_freqs, noise_amps, noise_phases : arrays, optional
+        High-frequency spectral noise for cost terrain.
     """
 
-    def __init__(self, ridges, k, base_cost=0.1):
+    def __init__(self, ridges, k, base_cost=0.1,
+                 noise_freqs=None, noise_amps=None, noise_phases=None):
         self.k = k
         self.n_ridges = len(ridges)
         self.base_cost = base_cost
@@ -127,6 +130,43 @@ class CostLandscape:
                                 dtype=np.float64)
         self.sigmas = np.array([r['sigma'] for r in ridges],
                                dtype=np.float64)
+        # High-frequency spectral noise
+        if noise_freqs is not None:
+            self.noise_freqs = np.array(noise_freqs, dtype=np.float64)
+            self.noise_amps = np.array(noise_amps, dtype=np.float64)
+            self.noise_phases = np.array(noise_phases, dtype=np.float64)
+        else:
+            self.noise_freqs = None
+            self.noise_amps = None
+            self.noise_phases = None
+
+    def _eval_noise(self, prefs):
+        """Evaluate high-frequency cost noise.  Returns (N,) in [0, 1]."""
+        if self.noise_freqs is None:
+            return np.zeros(len(prefs))
+        p = prefs.astype(np.float64)
+        dot = p @ self.noise_freqs.T  # (N, F)
+        waves = self.noise_amps[None, :] * np.sin(
+            2.0 * np.pi * dot + self.noise_phases[None, :])  # (N, F)
+        raw = waves.sum(axis=1)  # (N,)
+        amp_sum = self.noise_amps.sum()
+        if amp_sum > 0:
+            return (raw + amp_sum) / (2.0 * amp_sum)  # [0, 1]
+        return np.zeros(len(p))
+
+    def _eval_noise_gradient(self, prefs):
+        """Gradient of cost noise.  Returns (N, K)."""
+        if self.noise_freqs is None:
+            return np.zeros((len(prefs), self.k))
+        p = prefs.astype(np.float64)
+        dot = p @ self.noise_freqs.T  # (N, F)
+        cos_waves = self.noise_amps[None, :] * np.cos(
+            2.0 * np.pi * dot + self.noise_phases[None, :])  # (N, F)
+        grad = (2.0 * np.pi) * (cos_waves @ self.noise_freqs)  # (N, K)
+        amp_sum = self.noise_amps.sum()
+        if amp_sum > 0:
+            grad = grad / (2.0 * amp_sum)
+        return grad
 
     def cost(self, prefs):
         """Compute terrain cost at each particle's position.
@@ -147,7 +187,48 @@ class CostLandscape:
         ridge_costs = self.heights[None, :] * np.exp(
             -dist_sq / (2.0 * self.sigmas[None, :] ** 2))  # (N, R)
         total = self.base_cost + ridge_costs.sum(axis=1)  # (N,)
+        # Add high-frequency noise
+        total += self._eval_noise(p)
         return total
+
+    def cost_gradient(self, prefs):
+        """Compute gradient of terrain cost (points uphill in cost).
+
+        Parameters
+        ----------
+        prefs : (N, K) array
+
+        Returns
+        -------
+        grad : (N, K) array — cost gradient (NOT normalized)
+        cost : (N,) array — cost values
+        """
+        p = prefs.astype(np.float64)
+        diff = p[:, None, :] - self.centers[None, :, :]  # (N, R, K)
+        dist_sq = (diff ** 2).sum(axis=2)  # (N, R)
+        ridge_vals = self.heights[None, :] * np.exp(
+            -dist_sq / (2.0 * self.sigmas[None, :] ** 2))  # (N, R)
+        # Gradient of each ridge: d/dx [h*exp(-||x-c||^2/(2s^2))] = val * (c-x)/s^2
+        # But we want d/dx cost, and cost = sum of ridges, so:
+        # d/dx = sum_r  ridge_val_r * (-(x-c_r)) / s_r^2
+        #      = sum_r  ridge_val_r * (c_r - x) / s_r^2
+        # Actually: d/dx [exp(-||x-c||^2/(2s^2))] = exp(...) * (c-x)/s^2
+        # So d/dx [h * exp(...)] = h * exp(...) * (c-x)/s^2 = ridge_val * (c-x)/s^2
+        # But wait, (c-x) points TOWARD the center (downhill in cost).
+        # We want the gradient pointing UPHILL in cost, which is -(c-x) = (x-c).
+        # Actually no: the gradient of the Gaussian is (c-x)/s^2 * val, which
+        # points toward the center = uphill in cost.  Let me be careful:
+        # f(x) = h * exp(-||x-c||^2/(2s^2))
+        # df/dx = h * exp(...) * (-2(x-c)/(2s^2)) = -val * (x-c)/s^2 = val*(c-x)/s^2
+        # This points toward c (the peak of cost), i.e., UPHILL in cost. Correct.
+        ridge_grad = (ridge_vals[:, :, None] *
+                      (self.centers[None, :, :] - p[:, None, :]) /
+                      (self.sigmas[None, :, None] ** 2))  # (N, R, K)
+        grad = ridge_grad.sum(axis=1)  # (N, K)
+        # Add noise gradient
+        grad += self._eval_noise_gradient(p)
+        cost = self.base_cost + ridge_vals.sum(axis=1) + self._eval_noise(p)
+        return grad, cost
 
 
 def compute_employee_cost(sim, base=1.0, w_engineer=0.5, w_leader=0.5,
@@ -367,58 +448,81 @@ class RuggedLandscape:
 # ── Pre-built landscapes ────────────────────────────────────────────────────────
 
 def make_default_landscape(k=3):
-    """Create a rugged multi-scale landscape.
+    """Create a highly rugged multi-scale landscape.
 
     The landscape has:
     - 4 major peaks (1 global summit + 3 prominent local optima)
-    - 12 minor peaks (foothills, false summits, ridgeline bumps)
-    - 20 spectral noise frequencies (continuous roughness)
+    - 16 minor peaks (foothills, false summits, ridgeline bumps)
+    - 50 spectral noise frequencies (aggressive roughness at multiple
+      scales, creating ridges, saddle points, and false gradients)
 
-    The global summit is in a corner that requires navigating past
-    several deceptive local peaks.  The path is non-obvious.
+    The global summit is tucked in a corner behind deceptive local peaks
+    and cost barriers.  The terrain is rugged enough that individual
+    gradient sensing is unreliable — team aggregation is required.
     """
     rng = np.random.default_rng(2026)  # fixed seed for reproducibility
 
     # Major peaks — define the macro structure
     major_peaks = [
-        # Global summit — tucked in a corner, tall but narrow approach
-        {'center': [0.72, 0.78] + [0.65] * (k - 2), 'height': 1.0, 'sigma': 0.22},
+        # Global summit — narrow, tucked in a corner
+        {'center': [0.72, 0.78] + [0.65] * (k - 2), 'height': 1.0, 'sigma': 0.18},
         # Deceptive peak — near center, almost as tall, wide basin
-        {'center': [-0.10, 0.05] + [0.0] * (k - 2), 'height': 0.75, 'sigma': 0.35},
+        {'center': [-0.10, 0.05] + [0.0] * (k - 2), 'height': 0.82, 'sigma': 0.30},
         # Ridge peak — between origin and summit, creates a false path
-        {'center': [0.35, 0.50] + [0.30] * (k - 2), 'height': 0.65, 'sigma': 0.20},
+        {'center': [0.35, 0.50] + [0.30] * (k - 2), 'height': 0.70, 'sigma': 0.18},
         # Distant local peak — opposite corner, moderate
-        {'center': [-0.60, -0.55] + [-0.50] * (k - 2), 'height': 0.55, 'sigma': 0.28},
+        {'center': [-0.60, -0.55] + [-0.50] * (k - 2), 'height': 0.60, 'sigma': 0.25},
     ]
 
-    # Minor peaks — foothills and false summits
+    # Minor peaks — foothills, false summits, and ridgeline bumps
+    # More peaks, taller relative to major, tighter sigmas = more deceptive
     minor_peaks = [
-        {'center': [0.50, 0.20] + [0.15] * (k - 2), 'height': 0.40, 'sigma': 0.12},
-        {'center': [-0.40, 0.35] + [0.10] * (k - 2), 'height': 0.35, 'sigma': 0.14},
-        {'center': [0.15, -0.30] + [-0.20] * (k - 2), 'height': 0.30, 'sigma': 0.13},
-        {'center': [-0.20, -0.65] + [-0.30] * (k - 2), 'height': 0.38, 'sigma': 0.15},
-        {'center': [0.60, -0.10] + [0.20] * (k - 2), 'height': 0.32, 'sigma': 0.11},
-        {'center': [-0.70, 0.60] + [0.40] * (k - 2), 'height': 0.28, 'sigma': 0.16},
-        {'center': [0.20, 0.70] + [0.50] * (k - 2), 'height': 0.42, 'sigma': 0.13},
-        {'center': [-0.50, 0.00] + [-0.15] * (k - 2), 'height': 0.25, 'sigma': 0.10},
-        {'center': [0.80, 0.40] + [0.35] * (k - 2), 'height': 0.36, 'sigma': 0.12},
-        {'center': [0.00, -0.80] + [-0.60] * (k - 2), 'height': 0.30, 'sigma': 0.18},
-        {'center': [-0.30, 0.80] + [0.70] * (k - 2), 'height': 0.33, 'sigma': 0.11},
-        {'center': [0.45, 0.65] + [0.55] * (k - 2), 'height': 0.45, 'sigma': 0.10},
+        {'center': [0.50, 0.20] + [0.15] * (k - 2), 'height': 0.52, 'sigma': 0.10},
+        {'center': [-0.40, 0.35] + [0.10] * (k - 2), 'height': 0.48, 'sigma': 0.11},
+        {'center': [0.15, -0.30] + [-0.20] * (k - 2), 'height': 0.42, 'sigma': 0.10},
+        {'center': [-0.20, -0.65] + [-0.30] * (k - 2), 'height': 0.50, 'sigma': 0.12},
+        {'center': [0.60, -0.10] + [0.20] * (k - 2), 'height': 0.44, 'sigma': 0.09},
+        {'center': [-0.70, 0.60] + [0.40] * (k - 2), 'height': 0.38, 'sigma': 0.13},
+        {'center': [0.20, 0.70] + [0.50] * (k - 2), 'height': 0.55, 'sigma': 0.10},
+        {'center': [-0.50, 0.00] + [-0.15] * (k - 2), 'height': 0.35, 'sigma': 0.08},
+        {'center': [0.80, 0.40] + [0.35] * (k - 2), 'height': 0.46, 'sigma': 0.09},
+        {'center': [0.00, -0.80] + [-0.60] * (k - 2), 'height': 0.40, 'sigma': 0.14},
+        {'center': [-0.30, 0.80] + [0.70] * (k - 2), 'height': 0.43, 'sigma': 0.09},
+        {'center': [0.45, 0.65] + [0.55] * (k - 2), 'height': 0.58, 'sigma': 0.08},
+        # Additional deceptive bumps near the approach to the summit
+        {'center': [0.55, 0.60] + [0.50] * (k - 2), 'height': 0.50, 'sigma': 0.07},
+        {'center': [0.65, 0.55] + [0.45] * (k - 2), 'height': 0.45, 'sigma': 0.08},
+        {'center': [0.40, 0.70] + [0.60] * (k - 2), 'height': 0.47, 'sigma': 0.09},
+        {'center': [0.10, 0.40] + [0.25] * (k - 2), 'height': 0.40, 'sigma': 0.10},
     ]
 
-    # Spectral noise — multi-frequency roughness
-    n_freqs = 20
-    noise_freqs = rng.uniform(-3.0, 3.0, (n_freqs, k))
-    # Amplitude decays with frequency magnitude (higher freq = smaller bumps)
-    freq_mags = np.linalg.norm(noise_freqs, axis=1)
-    noise_amps = 0.08 / (1.0 + freq_mags)  # gentle decay
+    # Spectral noise — aggressive multi-frequency roughness
+    # Low frequencies (2-4): broad undulations
+    # Medium frequencies (5-8): ridges and valleys
+    # High frequencies (9-12): fine-grained ruggedness that makes
+    #   individual gradient sensing unreliable
+    n_low = 10
+    n_mid = 20
+    n_high = 20
+    n_freqs = n_low + n_mid + n_high
+
+    low_freqs = rng.uniform(-3.0, 3.0, (n_low, k))
+    mid_freqs = rng.uniform(-7.0, 7.0, (n_mid, k))
+    high_freqs = rng.uniform(-12.0, 12.0, (n_high, k))
+    noise_freqs = np.vstack([low_freqs, mid_freqs, high_freqs])
+
+    # Amplitudes: low-freq are strongest, but high-freq are still
+    # significant enough to create false gradients
+    low_amps = np.full(n_low, 0.10)
+    mid_amps = np.full(n_mid, 0.06)
+    high_amps = np.full(n_high, 0.035)
+    noise_amps = np.concatenate([low_amps, mid_amps, high_amps])
     noise_phases = rng.uniform(0, 2 * np.pi, n_freqs)
 
     return RuggedLandscape(
         major_peaks, minor_peaks,
         noise_freqs, noise_amps, noise_phases,
-        k, w_major=0.55, w_minor=0.25, w_noise=0.20,
+        k, w_major=0.45, w_minor=0.30, w_noise=0.25,
     )
 
 
@@ -447,30 +551,51 @@ def make_rugged_landscape(k=3, n_peaks=6, seed=42):
 
 
 def make_default_cost_landscape(k=3):
-    """Create a complex cost terrain with multiple ridges and valleys.
+    """Create a complex cost terrain with high-frequency noise.
 
     The cost terrain is designed to interact with the rugged fitness landscape:
-    - A major cost ridge blocks the direct path to the summit
+    - Major cost ridges block the direct path to the summit
     - The deceptive peak (near center) sits in a low-cost zone, making it
       tempting to stay there
-    - A secondary ridge guards the approach from the south
+    - High-frequency spectral noise creates narrow cheap corridors through
+      expensive terrain — only teams that share information can find them
     - The cheapest corridor to the summit goes through a low-fitness valley,
       requiring the team to accept temporary fitness loss for long-term gain
     """
+    rng = np.random.default_rng(2027)  # different seed from fitness landscape
+
+    # Cost ridge heights are calibrated to be comparable to fitness values
+    # (fitness peaks at ~0.55).  With cost_weight=0.3 (default), the cost
+    # gradient contribution is ~0.3 * ridge_height / sigma^2, which should
+    # be meaningful but not overwhelming relative to the fitness gradient.
     ridges = [
         # Main cost ridge — blocks the direct diagonal to summit
-        {'center': [0.30, 0.40] + [0.30] * (k - 2), 'height': 2.5, 'sigma': 0.22},
+        {'center': [0.30, 0.40] + [0.30] * (k - 2), 'height': 0.80, 'sigma': 0.20},
         # Secondary ridge — guards southern approach
-        {'center': [0.55, 0.10] + [0.15] * (k - 2), 'height': 1.8, 'sigma': 0.18},
+        {'center': [0.55, 0.10] + [0.15] * (k - 2), 'height': 0.60, 'sigma': 0.16},
         # Implementation cost near the summit
-        {'center': [0.65, 0.70] + [0.60] * (k - 2), 'height': 1.2, 'sigma': 0.15},
-        # Cost pocket near the deceptive peak — low cost, tempting to stay
-        # (modeled as negative height to create a cost valley — but since
-        #  CostLandscape uses base_cost + sum, we just don't put a ridge here)
+        {'center': [0.65, 0.70] + [0.60] * (k - 2), 'height': 0.45, 'sigma': 0.14},
+        # Cost wall along the northern approach
+        {'center': [0.50, 0.75] + [0.55] * (k - 2), 'height': 0.55, 'sigma': 0.15},
         # Small ridge near the distant local peak
-        {'center': [-0.50, -0.45] + [-0.40] * (k - 2), 'height': 1.0, 'sigma': 0.20},
-        # Scattered minor cost bumps
-        {'center': [0.10, 0.65] + [0.45] * (k - 2), 'height': 0.6, 'sigma': 0.12},
-        {'center': [-0.35, -0.20] + [-0.10] * (k - 2), 'height': 0.5, 'sigma': 0.14},
+        {'center': [-0.50, -0.45] + [-0.40] * (k - 2), 'height': 0.35, 'sigma': 0.18},
+        # Scattered cost bumps creating a maze-like cost field
+        {'center': [0.10, 0.65] + [0.45] * (k - 2), 'height': 0.25, 'sigma': 0.10},
+        {'center': [-0.35, -0.20] + [-0.10] * (k - 2), 'height': 0.20, 'sigma': 0.12},
+        {'center': [0.40, 0.30] + [0.25] * (k - 2), 'height': 0.30, 'sigma': 0.11},
+        {'center': [0.70, 0.50] + [0.45] * (k - 2), 'height': 0.28, 'sigma': 0.10},
     ]
-    return CostLandscape(ridges, k, base_cost=0.1)
+
+    # High-frequency spectral noise for cost — creates narrow cheap corridors
+    # These are deliberately high-frequency so the cost field has fine-grained
+    # structure that individual particles can't easily sense.
+    n_cost_freqs = 30
+    cost_noise_freqs = rng.uniform(-10.0, 10.0, (n_cost_freqs, k))
+    # Moderate amplitude: corridors are meaningful but don't dominate
+    cost_noise_amps = np.full(n_cost_freqs, 0.04)
+    cost_noise_phases = rng.uniform(0, 2 * np.pi, n_cost_freqs)
+
+    return CostLandscape(ridges, k, base_cost=0.05,
+                         noise_freqs=cost_noise_freqs,
+                         noise_amps=cost_noise_amps,
+                         noise_phases=cost_noise_phases)
