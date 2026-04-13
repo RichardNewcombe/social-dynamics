@@ -418,6 +418,15 @@ def main():
             params['step_size'] = ref['step_size'] * scale
             params['neighbor_radius'] = ref['radius'] * scale
         sim.reset()
+        # Mountain mode: sync initial positions to the surface
+        if params['mountain_mode'] and mountain_landscape is not None:
+            mc = getattr(sim, 'strategy', None)
+            if mc is None:
+                mc = sim.prefs
+            proj = project_particles_to_surface(
+                mc, mountain_landscape,
+                z_scale=params['mountain_z_scale'])
+            sim.pos[:, :3] = proj.astype(np.float64)
         rebuild_buffers()
         trail_fbo.use()
         ctx.clear(0, 0, 0)
@@ -510,19 +519,24 @@ def main():
                     else:
                         sim.prefs += nudge_strength * grad
                     np.clip(sim.prefs, -1.0, 1.0, out=sim.prefs)
+                    # Sync sim.pos to mountain-surface positions so that
+                    # spatial neighbor finding operates on the mountain,
+                    # not in the free-floating toroidal 3D space.
+                    mountain_coords = getattr(sim, 'strategy', None)
+                    if mountain_coords is None:
+                        mountain_coords = sim.prefs
+                    projected = project_particles_to_surface(
+                        mountain_coords, mountain_landscape,
+                        z_scale=params['mountain_z_scale'])
+                    sim.pos[:, :3] = projected.astype(np.float64)
         t_sim = time.perf_counter() - t0
 
         # ── Upload particle data to GPU ──
         positions, colors = sim.get_render_data()
-        # Mountain mode: project particles onto the fitness surface
-        # Use strategy vector if available (dual-space), else prefs
+        # Mountain mode: use the already-synced sim.pos (on the surface)
         if params['mountain_mode'] and mountain_landscape is not None:
-            mountain_coords = getattr(sim, 'strategy', None)
-            if mountain_coords is None:
-                mountain_coords = sim.prefs
-            positions = project_particles_to_surface(
-                mountain_coords, mountain_landscape,
-                z_scale=params['mountain_z_scale'])
+            # pos was synced above; just ensure float32 for GPU
+            positions = sim.pos[:, :3].astype(np.float32)
         vbo_pos.write(positions.tobytes())
         vbo_col.write(colors.tobytes())
 
