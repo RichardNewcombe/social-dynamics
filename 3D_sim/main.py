@@ -818,6 +818,23 @@ def main():
                 changed, v = imgui.checkbox("Mountain Mode", params['mountain_mode'])
                 if changed:
                     params['mountain_mode'] = v
+                    if v and not params['strategy_enabled']:
+                        # Auto-enable dual-space with sensible defaults
+                        params['strategy_enabled'] = True
+                        params['strategy_k'] = params['k']
+                        params['pref_strategy_coupling'] = 0.5
+                        params['use_particle_roles'] = True
+                        params['role_influence_std'] = 0.8
+                        params['role_step_scale_std'] = 0.5
+                        params['role_gradient_noise_mean'] = 2.0
+                        params['role_gradient_noise_std'] = 0.5
+                        params['role_visionary_mean'] = 0.05
+                        params['role_visionary_std'] = 0.03
+                        params['cost_weight'] = 0.3
+                        params['strategy_momentum'] = 0.3
+                        params['explore_probability'] = 0.005
+                        params['explore_radius'] = 0.15
+                        do_reset()
                 if params['mountain_mode']:
                     imgui.same_line()
                     imgui.text_colored(imgui.ImVec4(0.3, 1.0, 0.3, 1.0),
@@ -891,7 +908,7 @@ def main():
                     if changed:
                         params['role_step_scale_std'] = v
                     changed, v = imgui.drag_float("Grad Noise Mean", params['role_gradient_noise_mean'],
-                                                  0.01, 0.0, 2.0, "%.2f")
+                                                  0.01, 0.0, 5.0, "%.2f")
                     if changed:
                         params['role_gradient_noise_mean'] = v
                     changed, v = imgui.drag_float("Grad Noise Std", params['role_gradient_noise_std'],
