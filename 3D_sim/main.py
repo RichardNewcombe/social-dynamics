@@ -1,10 +1,15 @@
-#!/usr/bin/env python3
 """
 3D Preference-Directed Particle Simulation
 ===========================================
 
 3D version of sim_gpu_compute.py with orbit camera, MVP projection,
 wireframe cube, and all physics/neighbor features preserved.
+
+Mountain Mode adds a knowledge manifold experiment:
+  - Hidden fitness landscape (wireframe ghost)
+  - Growing knowledge surface (solid mesh, particles walk on it)
+  - Particles sense the hidden gradient with noise, aggregate across
+    neighbours, and deposit knowledge where they stand.
 
 Controls:
   Left drag   — orbit camera
@@ -16,6 +21,7 @@ Controls:
 """
 
 # ── Imports ──────────────────────────────────────────────────────────
+import argparse
 import math
 import numpy as np
 import os, site
@@ -42,6 +48,8 @@ from .shaders3d import (
     BOX_VERT, BOX_FRAG,
     LINE_VERT, LINE_FRAG,
     OVERLAY_VERT, OVERLAY_FRAG,
+    MESH_VERT, MESH_FRAG,
+    GHOST_VERT, GHOST_FRAG,
 )
 from .camera3d import OrbitCamera
 from .simulation3d import (
@@ -56,8 +64,41 @@ from .physics3d import _step_inner_prod_avg, _step_per_dim
 
 WINDOW_W, WINDOW_H = 0, 0
 
+# ── Mountain mode parameters (separate from sim params) ─────────────
+mountain_params = dict(
+    enabled=False,
+    z_scale=0.5,
+    grid_res=64,
+    gradient_noise=3.0,     # Noise std on hidden gradient observations
+    knowledge_write_rate=0.003,
+    diffusion_sigma=0.3,
+    decay=0.9995,
+    show_ghost=True,
+    ghost_alpha=0.15,
+    knowledge_alpha=0.7,
+    pref_nudge_rate=0.003,  # How fast prefs move toward sensed gradient
+    knowledge_climb_rate=0.001,  # Attraction toward knowledge gradient
+    explore_prob=0.003,     # Probability of random exploration jump
+    explore_radius=0.2,     # Radius of exploration jumps
+)
+
 
 def main():
+    # ── Parse CLI ──
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mountain', action='store_true',
+                        help='Enable knowledge manifold mountain mode')
+    args, _ = parser.parse_known_args()
+
+    if args.mountain:
+        mountain_params['enabled'] = True
+        # Good defaults for mountain mode
+        params['k'] = 3
+        params['social'] = 0.01
+        params['step_size'] = 0.003
+        params['inner_prod_avg'] = True
+        params['num_particles'] = 500
+
     # ── Initialize GLFW ──
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW")
@@ -256,6 +297,106 @@ def main():
         tex.repeat_x = True
         tex.repeat_y = True
 
+    # ── Mesh shaders for mountain surfaces ──
+    prog_mesh = ctx.program(vertex_shader=MESH_VERT,
+                            fragment_shader=MESH_FRAG)
+    prog_ghost = ctx.program(vertex_shader=GHOST_VERT,
+                             fragment_shader=GHOST_FRAG)
+
+    # Mountain mesh GPU buffers (allocated lazily on first build)
+    mesh_vbo_pos = None
+    mesh_vbo_norm = None
+    mesh_vbo_col = None
+    mesh_ibo = None
+    mesh_vao = None
+    mesh_n_indices = 0
+
+    ghost_vbo_pos = None
+    ghost_vbo_col = None
+    ghost_ibo = None
+    ghost_vao = None
+    ghost_n_indices = 0
+
+    # ── Mountain mode state ──
+    knowledge_field = None
+    landscape = None
+    _mountain_rng = np.random.default_rng(123)
+
+    def build_mountain():
+        """Initialise the knowledge field and hidden fitness landscape."""
+        nonlocal knowledge_field, landscape
+        from .knowledge_field import KnowledgeField
+        from experiments.landscape import make_default_landscape
+
+        landscape = make_default_landscape(seed=42)
+        G = mountain_params['grid_res']
+        knowledge_field = KnowledgeField(
+            grid_res=G,
+            diffusion_sigma=mountain_params['diffusion_sigma'],
+            decay=mountain_params['decay'],
+        )
+        knowledge_field.set_fitness_surface(landscape)
+        print(f"Mountain mode: landscape built, grid {G}x{G}")
+
+    def rebuild_mountain_mesh():
+        """Regenerate GPU mesh buffers from current knowledge grid."""
+        nonlocal mesh_vbo_pos, mesh_vbo_norm, mesh_vbo_col, mesh_ibo
+        nonlocal mesh_vao, mesh_n_indices
+        nonlocal ghost_vbo_pos, ghost_vbo_col, ghost_ibo
+        nonlocal ghost_vao, ghost_n_indices
+
+        if knowledge_field is None:
+            return
+
+        from .mountain_mesh import (
+            generate_surface_mesh, generate_wireframe_indices,
+        )
+
+        z_scale = mountain_params['z_scale']
+
+        # Knowledge surface (solid green)
+        verts, norms, cols, indices = generate_surface_mesh(
+            knowledge_field.grid, z_scale=z_scale, color=(0.2, 0.7, 0.3))
+        mesh_n_indices = len(indices)
+
+        if mesh_vbo_pos is None or mesh_vbo_pos.size < verts.nbytes:
+            mesh_vbo_pos = ctx.buffer(verts.tobytes())
+            mesh_vbo_norm = ctx.buffer(norms.tobytes())
+            mesh_vbo_col = ctx.buffer(cols.tobytes())
+            mesh_ibo = ctx.buffer(indices.tobytes())
+            mesh_vao = ctx.vertex_array(prog_mesh, [
+                (mesh_vbo_pos, '3f', 'in_pos'),
+                (mesh_vbo_norm, '3f', 'in_normal'),
+                (mesh_vbo_col, '3f', 'in_color'),
+            ], mesh_ibo)
+        else:
+            mesh_vbo_pos.write(verts.tobytes())
+            mesh_vbo_norm.write(norms.tobytes())
+            mesh_vbo_col.write(cols.tobytes())
+            mesh_ibo.write(indices.tobytes())
+
+        # Ghost fitness surface (wireframe, pale blue)
+        if knowledge_field._fitness_grid is not None:
+            g_verts, g_norms, g_cols, _ = generate_surface_mesh(
+                knowledge_field._fitness_grid, z_scale=z_scale,
+                color=(0.4, 0.5, 0.9))
+            G = knowledge_field.G
+            wire_indices = generate_wireframe_indices(G)
+            ghost_n_indices = len(wire_indices)
+
+            if ghost_vbo_pos is None or ghost_vbo_pos.size < g_verts.nbytes:
+                ghost_vbo_pos = ctx.buffer(g_verts.tobytes())
+                ghost_vbo_col = ctx.buffer(g_cols.tobytes())
+                ghost_ibo = ctx.buffer(wire_indices.tobytes())
+                ghost_vao = ctx.vertex_array(prog_ghost, [
+                    (ghost_vbo_pos, '3f', 'in_pos'),
+                    (ghost_vbo_col, '3f', 'in_color'),
+                ], ghost_ibo)
+            else:
+                ghost_vbo_pos.write(g_verts.tobytes())
+                ghost_vbo_col.write(g_cols.tobytes())
+                ghost_ibo.write(wire_indices.tobytes())
+
     # ── Create simulation ──
     sim = Simulation()
     running_sim = True
@@ -349,6 +490,29 @@ def main():
         ctx.clear(0, 0, 0)
         running_sim = True
 
+        # Reset knowledge field if mountain mode is on
+        if mountain_params['enabled'] and knowledge_field is not None:
+            knowledge_field.reset()
+            knowledge_field.diffusion_sigma = mountain_params['diffusion_sigma']
+            knowledge_field.decay = mountain_params['decay']
+            # Sync initial positions to knowledge surface
+            _sync_positions_to_knowledge()
+
+    def _sync_positions_to_knowledge():
+        """Project particle positions onto the knowledge manifold surface."""
+        if knowledge_field is None:
+            return
+        from .mountain_mesh import project_particles_to_knowledge_surface
+        projected = project_particles_to_knowledge_surface(
+            knowledge_field, sim.prefs, z_scale=mountain_params['z_scale'])
+        sim.pos[:, :3] = projected.astype(sim.pos.dtype)
+
+    # ── Initialise mountain if enabled ──
+    if mountain_params['enabled']:
+        build_mountain()
+        _sync_positions_to_knowledge()
+        rebuild_mountain_mesh()
+
     # ── FPS tracking ──
     frame_count = 0
     fps_time = time.perf_counter()
@@ -398,7 +562,14 @@ def main():
             spf = params['steps_per_frame']
             reuse = params['reuse_neighbors']
             for sub in range(spf):
+                # Phase 1: Social dynamics (Richard's original)
                 sim.step(reuse_neighbors=(reuse and sub > 0))
+
+                # Phase 2: Knowledge manifold step (mountain mode only)
+                if mountain_params['enabled'] and knowledge_field is not None:
+                    _knowledge_step(sim, knowledge_field, landscape,
+                                    _mountain_rng)
+
         t_sim = time.perf_counter() - t0
 
         # ── Upload particle data to GPU ──
@@ -408,6 +579,10 @@ def main():
 
         vel_colors = sim.get_velocity_colors()
         vbo_vel_col.write(vel_colors.tobytes())
+
+        # ── Update mountain mesh (every frame, not every sub-step) ──
+        if mountain_params['enabled'] and knowledge_field is not None:
+            rebuild_mountain_mesh()
 
         # ── Compute MVP ──
         aspect = (fb_w / 2.0) / fb_h
@@ -476,6 +651,20 @@ def main():
         ctx.viewport = (0, 0, fb_w // 2, fb_h)
         ctx.enable(moderngl.DEPTH_TEST)
         ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+
+        # ── Mountain mesh rendering ──
+        if mountain_params['enabled'] and mesh_vao is not None:
+            # Ghost fitness surface (wireframe, render first for depth)
+            if mountain_params['show_ghost'] and ghost_vao is not None:
+                prog_ghost['mvp'].write(mvp_bytes)
+                prog_ghost['alpha'] = mountain_params['ghost_alpha']
+                ghost_vao.render(moderngl.LINES)
+
+            # Knowledge surface (solid triangles)
+            prog_mesh['mvp'].write(mvp_bytes)
+            prog_mesh['alpha'] = mountain_params['knowledge_alpha']
+            prog_mesh['light_dir'] = (0.3, 1.0, 0.5)
+            mesh_vao.render(moderngl.TRIANGLES)
 
         if params['show_neighbors'] and sim.nbr_ids is not None:
             lines = sim.get_neighbor_lines()
@@ -590,6 +779,13 @@ def main():
                    f"query: {sim._t_query*1000:.1f}ms  "
                    f"physics: {sim._t_physics*1000:.1f}ms")
         imgui.text(f"Neighbors/particle: {sim._n_nbrs}")
+
+        # Mountain metrics
+        if mountain_params['enabled'] and knowledge_field is not None:
+            cov = knowledge_field.coverage()
+            peak = knowledge_field.peak_knowledge()
+            imgui.text(f"Knowledge: cov={cov:.1%}  peak={peak:.3f}")
+
         imgui.separator()
 
         label = "Resume" if not running_sim else "Pause"
@@ -640,6 +836,89 @@ def main():
                    f"El: {math.degrees(camera.elevation):.0f}  "
                    f"Dist: {camera.distance:.1f}")
         imgui.separator()
+
+        # ── Mountain Mode ──
+        if imgui.collapsing_header(
+                "Mountain Mode",
+                flags=int(imgui.TreeNodeFlags_.default_open.value)
+                      if mountain_params['enabled'] else 0):
+            changed, v = imgui.checkbox("Enable Mountain",
+                                        mountain_params['enabled'])
+            if changed:
+                mountain_params['enabled'] = v
+                if v and knowledge_field is None:
+                    params['k'] = 3
+                    params['social'] = 0.01
+                    params['step_size'] = 0.003
+                    params['inner_prod_avg'] = True
+                    build_mountain()
+                    do_reset()
+
+            if mountain_params['enabled']:
+                changed, v = imgui.drag_float(
+                    "Z Scale", mountain_params['z_scale'],
+                    0.01, 0.1, 2.0, "%.2f")
+                if changed:
+                    mountain_params['z_scale'] = v
+                changed, v = imgui.drag_float(
+                    "Gradient Noise", mountain_params['gradient_noise'],
+                    0.1, 0.0, 10.0, "%.1f")
+                if changed:
+                    mountain_params['gradient_noise'] = v
+                changed, v = imgui.drag_float(
+                    "Write Rate", mountain_params['knowledge_write_rate'],
+                    0.0005, 0.0, 0.1, "%.4f")
+                if changed:
+                    mountain_params['knowledge_write_rate'] = v
+                changed, v = imgui.drag_float(
+                    "Diffusion", mountain_params['diffusion_sigma'],
+                    0.05, 0.0, 5.0, "%.2f")
+                if changed:
+                    mountain_params['diffusion_sigma'] = v
+                    if knowledge_field is not None:
+                        knowledge_field.diffusion_sigma = v
+                changed, v = imgui.drag_float(
+                    "Decay", mountain_params['decay'],
+                    0.0005, 0.9, 1.0, "%.4f")
+                if changed:
+                    mountain_params['decay'] = v
+                    if knowledge_field is not None:
+                        knowledge_field.decay = v
+                changed, v = imgui.drag_float(
+                    "Pref Nudge", mountain_params['pref_nudge_rate'],
+                    0.0005, 0.0, 0.05, "%.4f")
+                if changed:
+                    mountain_params['pref_nudge_rate'] = v
+                changed, v = imgui.drag_float(
+                    "Know Climb", mountain_params['knowledge_climb_rate'],
+                    0.0005, 0.0, 0.05, "%.4f")
+                if changed:
+                    mountain_params['knowledge_climb_rate'] = v
+                changed, v = imgui.drag_float(
+                    "Explore Prob", mountain_params['explore_prob'],
+                    0.001, 0.0, 0.1, "%.4f")
+                if changed:
+                    mountain_params['explore_prob'] = v
+                changed, v = imgui.drag_float(
+                    "Explore Radius", mountain_params['explore_radius'],
+                    0.01, 0.0, 1.0, "%.3f")
+                if changed:
+                    mountain_params['explore_radius'] = v
+                imgui.separator()
+                changed, v = imgui.checkbox("Show Ghost",
+                                            mountain_params['show_ghost'])
+                if changed:
+                    mountain_params['show_ghost'] = v
+                changed, v = imgui.drag_float(
+                    "Ghost Alpha", mountain_params['ghost_alpha'],
+                    0.01, 0.0, 1.0, "%.2f")
+                if changed:
+                    mountain_params['ghost_alpha'] = v
+                changed, v = imgui.drag_float(
+                    "Surface Alpha", mountain_params['knowledge_alpha'],
+                    0.01, 0.0, 1.0, "%.2f")
+                if changed:
+                    mountain_params['knowledge_alpha'] = v
 
         # ── Live parameters ──
         if imgui.collapsing_header(
@@ -820,6 +1099,98 @@ def main():
     imgui.destroy_context(imgui_ctx)
     glfw.destroy_window(window)
     glfw.terminate()
+
+
+# ====================================================================
+# KNOWLEDGE STEP — the core mountain mode logic
+# ====================================================================
+
+def _knowledge_step(sim, knowledge_field, landscape, rng):
+    """One step of knowledge manifold dynamics.
+
+    After sim.step() has run social dynamics (Phase 1), this function:
+    1. Each particle senses the hidden fitness gradient with heavy noise
+    2. Aggregate noisy observations across neighbours (team averaging)
+    3. Nudge skill preferences (dims 0,1) toward the aggregated direction
+    4. Deposit knowledge at each particle's position
+    5. Diffuse the knowledge field
+    6. Sync particle 3D positions to the knowledge surface
+    """
+    from .mountain_mesh import project_particles_to_knowledge_surface
+
+    n = sim.n
+    prefs = sim.prefs  # (N, K) — dims 0,1 are skills, dim 2 is social
+    nbr_ids = sim.nbr_ids  # (N, M) from Phase 1
+    valid = sim._valid_mask
+
+    if nbr_ids is None:
+        return
+
+    noise_std = mountain_params['gradient_noise']
+    write_rate = mountain_params['knowledge_write_rate']
+    nudge_rate = mountain_params['pref_nudge_rate']
+    z_scale = mountain_params['z_scale']
+
+    # 1. Sense hidden gradient with noise
+    #    Build (N, 3) probe array with dim 2 = 0 for gradient evaluation
+    probes = np.zeros((n, 3), dtype=np.float64)
+    probes[:, 0] = prefs[:, 0]
+    probes[:, 1] = prefs[:, 1]
+    true_grad = landscape.gradient(probes)  # (N, 2)
+
+    # Add heavy noise — this is what makes solo particles fail
+    noise = rng.normal(0, noise_std, (n, 2))
+    noisy_grad = true_grad + noise  # (N, 2) — NOT normalised
+
+    # 2. Aggregate across neighbours (team averaging reduces noise)
+    M = nbr_ids.shape[1]
+    nbr_grad = noisy_grad[nbr_ids]  # (N, M, 2)
+
+    if valid is not None:
+        # Mask invalid neighbours
+        nbr_grad = nbr_grad * valid[:, :, None]
+        n_valid = valid.sum(axis=1).clip(1)[:, None]
+        team_grad = nbr_grad.sum(axis=1) / n_valid  # (N, 2)
+    else:
+        team_grad = nbr_grad.mean(axis=1)  # (N, 2)
+
+    # 3. Knowledge gradient — climb what you know
+    know_climb = mountain_params['knowledge_climb_rate']
+    if know_climb > 0:
+        know_grad = knowledge_field.knowledge_gradient(prefs[:, 0], prefs[:, 1])
+    else:
+        know_grad = np.zeros((n, 2), dtype=np.float64)
+
+    # 4. Combined movement: hidden gradient signal + knowledge climb
+    combined = nudge_rate * team_grad + know_climb * know_grad
+
+    # 5. Exploration: random jumps for some particles
+    explore_prob = mountain_params['explore_prob']
+    explore_radius = mountain_params['explore_radius']
+    if explore_prob > 0:
+        explore_mask = rng.random(n) < explore_prob
+        n_explore = explore_mask.sum()
+        if n_explore > 0:
+            jump = rng.normal(0, explore_radius, (n_explore, 2))
+            combined[explore_mask] += jump
+
+    # 6. Apply movement to skill prefs only (dims 0,1) — dim 2 (social) untouched
+    prefs[:, 0] += combined[:, 0].astype(prefs.dtype)
+    prefs[:, 1] += combined[:, 1].astype(prefs.dtype)
+    np.clip(prefs, -1, 1, out=prefs)
+
+    # 7. Deposit knowledge at each particle's current position
+    #    Amount = write_rate (could be modulated by team size, role, etc.)
+    amounts = np.full(n, write_rate, dtype=np.float64)
+    knowledge_field.deposit_knowledge(prefs[:, 0], prefs[:, 1], amounts)
+
+    # 8. Diffuse the knowledge field
+    knowledge_field.step_field()
+
+    # 9. Sync 3D positions to the knowledge surface
+    projected = project_particles_to_knowledge_surface(
+        knowledge_field, prefs, z_scale=z_scale)
+    sim.pos[:, :3] = projected.astype(sim.pos.dtype)
 
 
 if __name__ == '__main__':
