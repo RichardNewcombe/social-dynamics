@@ -69,17 +69,28 @@ mountain_params = dict(
     enabled=False,
     z_scale=0.5,
     grid_res=64,
-    gradient_noise=3.0,     # Noise std on hidden gradient observations
-    knowledge_write_rate=0.003,
-    diffusion_sigma=0.3,
-    decay=0.9995,
+    # --- Research dynamics ---
+    gradient_noise_base=3.0,   # Base noise std on "noisy up" observations
+    gradient_noise_max=8.0,    # Max noise when stuck (adaptive)
+    noise_adapt_rate=0.05,     # How fast noise adapts to success/failure
+    knowledge_write_rate=0.015,
+    pref_nudge_rate=0.003,     # Lateral drift rate from noisy-up direction
+    knowledge_climb_rate=0.002, # Climb toward known-good regions
+    # --- Knowledge field ---
+    diffusion_sigma=0.5,       # Knowledge spread radius
+    decay=0.9999,              # Slower decay
+    support_radius=3,          # Structural support neighbourhood (cells)
+    max_slope=0.4,             # Max height above local mean
+    # --- Reward-modulated social learning ---
+    reward_ema_alpha=0.05,     # EMA smoothing for reward signal
+    reward_social_scale=5.0,   # How much reward amplifies social pull
+    # --- Exploration ---
+    explore_prob=0.003,
+    explore_radius=0.2,
+    # --- Rendering ---
     show_ghost=True,
     ghost_alpha=0.15,
     knowledge_alpha=0.7,
-    pref_nudge_rate=0.003,  # How fast prefs move toward sensed gradient
-    knowledge_climb_rate=0.001,  # Attraction toward knowledge gradient
-    explore_prob=0.003,     # Probability of random exploration jump
-    explore_radius=0.2,     # Radius of exploration jumps
 )
 
 
@@ -321,6 +332,8 @@ def main():
     knowledge_field = None
     landscape = None
     _mountain_rng = np.random.default_rng(123)
+    _reward_ema = None       # (N,) per-particle smoothed reward
+    _noise_level = None      # (N,) per-particle adaptive noise level
 
     def build_mountain():
         """Initialise the knowledge field and hidden fitness landscape."""
@@ -334,6 +347,8 @@ def main():
             grid_res=G,
             diffusion_sigma=mountain_params['diffusion_sigma'],
             decay=mountain_params['decay'],
+            support_radius=mountain_params['support_radius'],
+            max_slope=mountain_params['max_slope'],
         )
         knowledge_field.set_fitness_surface(landscape)
         print(f"Mountain mode: landscape built, grid {G}x{G}")
@@ -565,10 +580,24 @@ def main():
                 # Phase 1: Social dynamics (Richard's original)
                 sim.step(reuse_neighbors=(reuse and sub > 0))
 
+                # Phase 1.5: Reward-weighted social nudge (mountain mode only)
+                # Successful particles (high reward_ema) pull harder on
+                # neighbours, making productive teams more attractive.
+                # This runs AFTER Richard's social dynamics but BEFORE
+                # the knowledge step, so it modulates team formation.
+                if mountain_params['enabled'] and _reward_ema is not None:
+                    _reward_social_nudge(sim, _reward_ema)
+
                 # Phase 2: Knowledge manifold step (mountain mode only)
                 if mountain_params['enabled'] and knowledge_field is not None:
+                    # Lazy-init per-particle state
+                    if _reward_ema is None or len(_reward_ema) != sim.n:
+                        _reward_ema = np.zeros(sim.n, dtype=np.float64)
+                        _noise_level = np.full(sim.n,
+                                               mountain_params['gradient_noise_base'],
+                                               dtype=np.float64)
                     _knowledge_step(sim, knowledge_field, landscape,
-                                    _mountain_rng)
+                                    _mountain_rng, _reward_ema, _noise_level)
 
         t_sim = time.perf_counter() - t0
 
@@ -861,10 +890,20 @@ def main():
                 if changed:
                     mountain_params['z_scale'] = v
                 changed, v = imgui.drag_float(
-                    "Gradient Noise", mountain_params['gradient_noise'],
+                    "Noise Base", mountain_params['gradient_noise_base'],
                     0.1, 0.0, 10.0, "%.1f")
                 if changed:
-                    mountain_params['gradient_noise'] = v
+                    mountain_params['gradient_noise_base'] = v
+                changed, v = imgui.drag_float(
+                    "Noise Max", mountain_params['gradient_noise_max'],
+                    0.1, 0.0, 20.0, "%.1f")
+                if changed:
+                    mountain_params['gradient_noise_max'] = v
+                changed, v = imgui.drag_float(
+                    "Noise Adapt", mountain_params['noise_adapt_rate'],
+                    0.005, 0.0, 0.5, "%.3f")
+                if changed:
+                    mountain_params['noise_adapt_rate'] = v
                 changed, v = imgui.drag_float(
                     "Write Rate", mountain_params['knowledge_write_rate'],
                     0.0005, 0.0, 0.1, "%.4f")
@@ -894,6 +933,16 @@ def main():
                     0.0005, 0.0, 0.05, "%.4f")
                 if changed:
                     mountain_params['knowledge_climb_rate'] = v
+                changed, v = imgui.drag_float(
+                    "Reward Social", mountain_params['reward_social_scale'],
+                    0.1, 0.0, 20.0, "%.1f")
+                if changed:
+                    mountain_params['reward_social_scale'] = v
+                changed, v = imgui.drag_float(
+                    "Reward EMA", mountain_params['reward_ema_alpha'],
+                    0.005, 0.0, 0.5, "%.3f")
+                if changed:
+                    mountain_params['reward_ema_alpha'] = v
                 changed, v = imgui.drag_float(
                     "Explore Prob", mountain_params['explore_prob'],
                     0.001, 0.0, 0.1, "%.4f")
@@ -1102,19 +1151,96 @@ def main():
 
 
 # ====================================================================
+# REWARD-WEIGHTED SOCIAL NUDGE (Phase 1.5)
+# ====================================================================
+
+def _reward_social_nudge(sim, reward_ema):
+    """Pull particles toward their most successful neighbours.
+
+    After Richard's social dynamics (Phase 1), this applies an additional
+    small preference nudge that is weighted by each neighbour's reward
+    (rate of knowledge growth).  Successful particles pull harder,
+    making productive teams more socially attractive.
+
+    This modulates *who clusters with whom* — not the knowledge dynamics
+    directly.  The effect is that talent flows toward productive teams.
+    """
+    scale = mountain_params['reward_social_scale']
+    if scale <= 0 or sim.nbr_ids is None:
+        return
+
+    prefs = sim.prefs  # (N, K)
+    nbr_ids = sim.nbr_ids  # (N, M)
+    valid = sim._valid_mask
+
+    # Neighbour reward weights: 1 + scale * reward_ema[nbr]
+    # Particles with zero reward have weight 1 (normal).
+    # Particles with high reward have weight >> 1 (stronger pull).
+    nbr_reward = reward_ema[nbr_ids]  # (N, M)
+    w = 1.0 + scale * np.maximum(nbr_reward, 0.0)  # (N, M)
+
+    if valid is not None:
+        w = w * valid
+        w_sum = w.sum(axis=1, keepdims=True)
+        w_sum = np.maximum(w_sum, 1e-10)
+    else:
+        w_sum = w.sum(axis=1, keepdims=True)
+        w_sum = np.maximum(w_sum, 1e-10)
+
+    w_norm = w / w_sum  # (N, M) — normalized weights
+
+    # Reward-weighted neighbour mean preference
+    nbr_prefs = prefs[nbr_ids]  # (N, M, K)
+    weighted_mean = (nbr_prefs * w_norm[:, :, None]).sum(axis=1)  # (N, K)
+
+    # Small nudge toward the reward-weighted mean
+    # Use a fraction of the normal social rate to avoid overwhelming
+    # Richard's social dynamics.
+    nudge_strength = params['social'] * 0.5  # half the normal social rate
+    prefs[:] = (1.0 - nudge_strength) * prefs + nudge_strength * weighted_mean
+    np.clip(prefs, -1, 1, out=prefs)
+
+
+# ====================================================================
 # KNOWLEDGE STEP — the core mountain mode logic
 # ====================================================================
 
-def _knowledge_step(sim, knowledge_field, landscape, rng):
+def _knowledge_step(sim, knowledge_field, landscape, rng,
+                    reward_ema, noise_level):
     """One step of knowledge manifold dynamics.
 
     After sim.step() has run social dynamics (Phase 1), this function:
-    1. Each particle senses the hidden fitness gradient with heavy noise
-    2. Aggregate noisy observations across neighbours (team averaging)
-    3. Nudge skill preferences (dims 0,1) toward the aggregated direction
-    4. Deposit knowledge at each particle's position
-    5. Diffuse the knowledge field
-    6. Sync particle 3D positions to the knowledge surface
+
+    1. "Noisy up" research: each particle tries to push knowledge upward
+       at its current position.  The research direction is primarily
+       vertical (advance core domain) with lateral noise that can shift
+       focus slightly.  Noise is per-particle and adaptive.
+
+    2. Team averaging: aggregate noisy research vectors across spatial
+       neighbours.  Larger teams average out noise → more reliable
+       progress.  This is the core group advantage.
+
+    3. Deposit knowledge: raise the manifold at each particle's position.
+       Amount = team-averaged research magnitude.  Capped by the hidden
+       fitness ceiling and the structural support constraint (can't build
+       thin spires — need a broad base).
+
+    4. Reward tracking: measure actual knowledge growth (rate of change).
+       Update per-particle EMA reward.  This feeds back into social
+       dynamics (successful particles attract others).
+
+    5. Adaptive noise: particles with high reward (productive) keep low
+       noise (stay focused).  Particles with low reward (stuck) get
+       increasing noise (explore laterally to get unstuck).
+
+    6. Diffuse knowledge field and sync positions to surface.
+
+    Parameters
+    ----------
+    reward_ema : ndarray (N,) — modified in-place
+        Per-particle exponential moving average of reward.
+    noise_level : ndarray (N,) — modified in-place
+        Per-particle current noise level (adaptive).
     """
     from .mountain_mesh import project_particles_to_knowledge_surface
 
@@ -1126,45 +1252,68 @@ def _knowledge_step(sim, knowledge_field, landscape, rng):
     if nbr_ids is None:
         return
 
-    noise_std = mountain_params['gradient_noise']
     write_rate = mountain_params['knowledge_write_rate']
     nudge_rate = mountain_params['pref_nudge_rate']
     z_scale = mountain_params['z_scale']
+    noise_base = mountain_params['gradient_noise_base']
+    noise_max = mountain_params['gradient_noise_max']
+    noise_adapt = mountain_params['noise_adapt_rate']
+    ema_alpha = mountain_params['reward_ema_alpha']
 
-    # 1. Sense hidden gradient with noise
-    #    Build (N, 3) probe array with dim 2 = 0 for gradient evaluation
+    # ── 1. "Noisy up" research ──────────────────────────────────────
+    # The research signal is primarily "push knowledge up at my position."
+    # The hidden fitness gradient provides a SMALL lateral hint about
+    # which direction might be more productive, but heavily noised.
+    # The noise is per-particle and adaptive (stuck → more noise).
+
+    # Sense the hidden gradient (lateral hint only)
     probes = np.zeros((n, 3), dtype=np.float64)
     probes[:, 0] = prefs[:, 0]
     probes[:, 1] = prefs[:, 1]
     true_grad = landscape.gradient(probes)  # (N, 2)
 
-    # Add heavy noise — this is what makes solo particles fail
-    noise = rng.normal(0, noise_std, (n, 2))
-    noisy_grad = true_grad + noise  # (N, 2) — NOT normalised
+    # Normalize to unit direction — the landscape shape says WHERE,
+    # not HOW FAST
+    grad_mag = np.linalg.norm(true_grad, axis=1, keepdims=True)
+    grad_mag = np.maximum(grad_mag, 1e-10)
+    true_grad_unit = true_grad / grad_mag
 
-    # 2. Aggregate across neighbours (team averaging reduces noise)
+    # Per-particle adaptive noise
+    noise = rng.normal(0, 1, (n, 2)) * noise_level[:, None]
+    noisy_direction = true_grad_unit + noise  # (N, 2)
+
+    # ── 2. Team averaging ───────────────────────────────────────────
+    # Average noisy research vectors across neighbours.
+    # Larger teams → better noise cancellation → more reliable direction.
     M = nbr_ids.shape[1]
-    nbr_grad = noisy_grad[nbr_ids]  # (N, M, 2)
+    nbr_dir = noisy_direction[nbr_ids]  # (N, M, 2)
 
     if valid is not None:
-        # Mask invalid neighbours
-        nbr_grad = nbr_grad * valid[:, :, None]
+        nbr_dir = nbr_dir * valid[:, :, None]
         n_valid = valid.sum(axis=1).clip(1)[:, None]
-        team_grad = nbr_grad.sum(axis=1) / n_valid  # (N, 2)
+        team_dir = nbr_dir.sum(axis=1) / n_valid  # (N, 2)
     else:
-        team_grad = nbr_grad.mean(axis=1)  # (N, 2)
+        team_dir = nbr_dir.mean(axis=1)  # (N, 2)
 
-    # 3. Knowledge gradient — climb what you know
-    know_climb = mountain_params['knowledge_climb_rate']
-    if know_climb > 0:
-        know_grad = knowledge_field.knowledge_gradient(prefs[:, 0], prefs[:, 1])
-    else:
-        know_grad = np.zeros((n, 2), dtype=np.float64)
+    # Normalize team direction to unit vector
+    team_mag = np.linalg.norm(team_dir, axis=1, keepdims=True)
+    team_mag = np.maximum(team_mag, 1e-10)
+    team_dir_unit = team_dir / team_mag
 
-    # 4. Combined movement: hidden gradient signal + knowledge climb
-    combined = nudge_rate * team_grad + know_climb * know_grad
+    # ── 3. Knowledge gradient climbing ────────────────────────────────
+    # Move toward known-good regions on the knowledge surface.
+    climb_rate = mountain_params['knowledge_climb_rate']
+    know_grad = knowledge_field.knowledge_gradient(prefs[:, 0], prefs[:, 1])
+    know_mag = np.linalg.norm(know_grad, axis=1, keepdims=True)
+    know_mag = np.maximum(know_mag, 1e-10)
+    know_dir = know_grad / know_mag
 
-    # 5. Exploration: random jumps for some particles
+    # ── 4. Lateral drift ────────────────────────────────────────────
+    # The team-averaged direction provides a small lateral nudge,
+    # plus knowledge gradient climbing toward known-good regions.
+    lateral_nudge = nudge_rate * team_dir_unit + climb_rate * know_dir
+
+    # Exploration: random jumps for stuck particles
     explore_prob = mountain_params['explore_prob']
     explore_radius = mountain_params['explore_radius']
     if explore_prob > 0:
@@ -1172,22 +1321,50 @@ def _knowledge_step(sim, knowledge_field, landscape, rng):
         n_explore = explore_mask.sum()
         if n_explore > 0:
             jump = rng.normal(0, explore_radius, (n_explore, 2))
-            combined[explore_mask] += jump
+            lateral_nudge[explore_mask] += jump
 
-    # 6. Apply movement to skill prefs only (dims 0,1) — dim 2 (social) untouched
-    prefs[:, 0] += combined[:, 0].astype(prefs.dtype)
-    prefs[:, 1] += combined[:, 1].astype(prefs.dtype)
+    # Apply lateral drift to skill prefs (dims 0,1) — dim 2 untouched
+    prefs[:, 0] += lateral_nudge[:, 0].astype(prefs.dtype)
+    prefs[:, 1] += lateral_nudge[:, 1].astype(prefs.dtype)
     np.clip(prefs, -1, 1, out=prefs)
 
-    # 7. Deposit knowledge at each particle's current position
-    #    Amount = write_rate (could be modulated by team size, role, etc.)
+    # ── 4. Deposit knowledge ("push up") ────────────────────────────
+    # The main research action: try to raise the knowledge manifold
+    # at each particle's current position.
+    # Amount is the write_rate — the structural support constraint
+    # inside deposit_knowledge will limit how much actually sticks.
     amounts = np.full(n, write_rate, dtype=np.float64)
-    knowledge_field.deposit_knowledge(prefs[:, 0], prefs[:, 1], amounts)
+    actual_growth = knowledge_field.deposit_knowledge(
+        prefs[:, 0], prefs[:, 1], amounts)
 
-    # 8. Diffuse the knowledge field
+    # ── 5. Reward tracking ──────────────────────────────────────────
+    # Reward = actual knowledge growth at this particle's position.
+    # Update the per-particle EMA.
+    reward_ema[:] = (1.0 - ema_alpha) * reward_ema + ema_alpha * actual_growth
+
+    # Store reward on the sim object so social dynamics can use it
+    sim._reward_ema = reward_ema
+
+    # ── 6. Adaptive noise ───────────────────────────────────────────
+    # High reward (productive) → noise decreases toward base level
+    # Low reward (stuck) → noise increases toward max level
+    # This makes stuck teams explore laterally to find new territory.
+    reward_threshold = write_rate * 0.3  # "meaningful" progress
+    productive = reward_ema > reward_threshold
+    stuck = ~productive
+
+    # Productive: noise decays toward base
+    noise_level[productive] += noise_adapt * (
+        noise_base - noise_level[productive])
+    # Stuck: noise grows toward max
+    noise_level[stuck] += noise_adapt * (
+        noise_max - noise_level[stuck])
+    np.clip(noise_level, noise_base, noise_max, out=noise_level)
+
+    # ── 7. Diffuse knowledge field ──────────────────────────────────
     knowledge_field.step_field()
 
-    # 9. Sync 3D positions to the knowledge surface
+    # ── 8. Sync 3D positions to the knowledge surface ───────────────
     projected = project_particles_to_knowledge_surface(
         knowledge_field, prefs, z_scale=z_scale)
     sim.pos[:, :3] = projected.astype(sim.pos.dtype)

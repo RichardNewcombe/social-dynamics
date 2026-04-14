@@ -7,25 +7,35 @@ organization's accumulated knowledge.  The hidden fitness landscape is
 the ceiling; knowledge can never exceed it.
 
 Particles live on the knowledge surface.  They raise it by performing
-noisy research (sampling the hidden fitness gradient), and knowledge
-diffuses spatially so one team's discoveries benefit neighbours.
+noisy research ("noisy up"), and knowledge diffuses spatially so one
+team's discoveries benefit neighbours.
+
+Structural constraint
+---------------------
+Knowledge can only rise at a point if the surrounding base supports it.
+The maximum height at any cell is limited by the average knowledge in a
+local neighbourhood plus a "max_slope" allowance.  This means you can't
+create infinitely thin spires — you need a broad base to build high.
+Two adjacent teams raising knowledge together build a shared base that
+supports higher peaks than either could alone.
 
 Coordinate convention
 ---------------------
 - pref0, pref1 ∈ [-1, 1]  (particle skill preferences)
-- Grid cells map linearly:  cell_x = (pref0 + 1) / 2 * G
-                             cell_y = (pref1 + 1) / 2 * G
+- Grid cells map linearly:  cell_x = (pref0 + 1) / 2 * (G-1)
+                             cell_y = (pref1 + 1) / 2 * (G-1)
 - Knowledge height ∈ [0, 1] (normalised against fitness range)
 """
 
 import numpy as np
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, uniform_filter
 
 
 class KnowledgeField:
     """Persistent 2D knowledge manifold over skill space."""
 
-    def __init__(self, grid_res=64, diffusion_sigma=1.0, decay=1.0):
+    def __init__(self, grid_res=64, diffusion_sigma=1.0, decay=1.0,
+                 support_radius=3, max_slope=0.15):
         """
         Parameters
         ----------
@@ -35,10 +45,18 @@ class KnowledgeField:
             Gaussian blur sigma for spatial diffusion each step.
         decay : float
             Multiplicative decay per step (1.0 = no decay).
+        support_radius : int
+            Radius (in cells) of the neighbourhood used for the
+            structural support constraint.
+        max_slope : float
+            Maximum allowed height above the local neighbourhood mean.
+            Lower values = broader bases required for tall peaks.
         """
         self.G = grid_res
         self.diffusion_sigma = diffusion_sigma
         self.decay = decay
+        self.support_radius = support_radius
+        self.max_slope = max_slope
 
         # The knowledge surface: scalar height at each grid cell
         # Normalised to [0, 1] where 1 = max fitness
@@ -161,16 +179,54 @@ class KnowledgeField:
         pref0, pref1 : ndarray (N,)
         amounts : ndarray (N,) float64
             How much to raise at each position.  Will be capped at
-            the hidden fitness ceiling.
+            the hidden fitness ceiling and the structural support limit.
+
+        Returns
+        -------
+        actual_growth : ndarray (N,) float64
+            How much the manifold actually rose at each particle's cell.
+            Used for reward computation.
         """
         cx, cy = self._pref_to_cell(pref0, pref1)
+
+        # Snapshot before deposit
+        before = self.grid[cx, cy].copy()
+
+        # Deposit
         np.add.at(self.grid, (cx, cy), amounts)
 
         # Cap at the fitness ceiling
         if self._fitness_grid is not None:
             np.minimum(self.grid, self._fitness_grid, out=self.grid)
 
+        # Structural support constraint: can't be more than max_slope
+        # above the local neighbourhood mean
+        self._apply_support_constraint()
+
         # Also clamp to [0, 1] for safety
+        np.clip(self.grid, 0.0, 1.0, out=self.grid)
+
+        # Compute actual growth at each particle's cell
+        after = self.grid[cx, cy]
+        actual_growth = after - before
+        np.maximum(actual_growth, 0.0, out=actual_growth)
+        return actual_growth
+
+    def _apply_support_constraint(self):
+        """Enforce structural support: height <= local_mean + max_slope.
+
+        This prevents infinitely thin spires.  A cell can only be
+        max_slope above the average of its neighbourhood.  This means
+        broad bases support higher peaks.
+        """
+        r = self.support_radius
+        if r <= 0:
+            return
+        # Compute local mean using a uniform (box) filter
+        size = 2 * r + 1
+        local_mean = uniform_filter(self.grid, size=size, mode='wrap')
+        max_allowed = local_mean + self.max_slope
+        np.minimum(self.grid, max_allowed, out=self.grid)
         np.clip(self.grid, 0.0, 1.0, out=self.grid)
 
     # ── Diffuse and decay ──────────────────────────────────────────
@@ -185,6 +241,9 @@ class KnowledgeField:
         if self.diffusion_sigma > 0:
             self.grid = gaussian_filter(
                 self.grid, sigma=self.diffusion_sigma, mode='wrap')
+
+        # Re-apply structural support after diffusion
+        self._apply_support_constraint()
 
         # Re-cap after diffusion (blur can push above ceiling)
         if self._fitness_grid is not None:
