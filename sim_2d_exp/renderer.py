@@ -34,6 +34,13 @@ from .physics_numba import warmup_numba_physics
 from .physics_torch import _HAS_TORCH, _TORCH_DEVICE
 from .simulation import Simulation
 
+# ── Experiment integration (optional) ──
+try:
+    from experiments.controller import ExperimentController
+    _HAS_EXPERIMENTS = True
+except ImportError:
+    _HAS_EXPERIMENTS = False
+
 
 WINDOW_W, WINDOW_H = 0, 0
 
@@ -359,6 +366,9 @@ def run():
     shadow_divergence = 0.0 # RMS distance between sim and shadow
     running_sim = True
 
+    # ── Experiment controller (optional) ──
+    exp_ctrl = ExperimentController() if _HAS_EXPERIMENTS else None
+
     # ── Recording state ──
     rec_process = None
     rec_frame_count = 0
@@ -488,6 +498,8 @@ def run():
                     force_trail_fbo, force_trail_fbo2):
             fbo.use()
             ctx.clear(0, 0, 0)
+        if exp_ctrl is not None:
+            exp_ctrl.on_reset(sim)
         running_sim = True
 
     def reset_view():
@@ -540,6 +552,8 @@ def run():
             reuse = params['reuse_neighbors']
             for sub in range(spf):
                 sim.step(reuse_neighbors=(reuse and sub > 0))
+                if exp_ctrl is not None:
+                    exp_ctrl.on_step(sim)
                 if shadow_sim is not None:
                     shadow_sim.step(reuse_neighbors=(reuse and sub > 0))
         t_sim = time.perf_counter() - t0
@@ -1525,6 +1539,10 @@ def run():
                 if changed:
                     params['seed'] = v
 
+        # ── Experiment panel ──
+        if exp_ctrl is not None:
+            exp_ctrl.draw_gui(sim)
+
         imgui.end()
 
         # Selection rectangle overlay
@@ -1556,8 +1574,10 @@ def run():
             frame_count = 0
             fps_time = now
 
+        exp_status = exp_ctrl.status_text() if exp_ctrl is not None else ""
+        title_extra = f"  {exp_status}" if exp_status else ""
         glfw.set_window_title(window,
-            f"Particles [{status}] Step:{sim.step_count} FPS:{fps:.0f}")
+            f"Particles [{status}] Step:{sim.step_count} FPS:{fps:.0f}{title_extra}")
 
     # ── Cleanup ──
     stop_recording()

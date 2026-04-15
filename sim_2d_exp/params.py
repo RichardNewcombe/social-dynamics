@@ -92,6 +92,26 @@ params = dict(
     use_signal_response=False,  # split prefs into signal + response vectors
     swap_signal_response=False, # swap roles: signal↔response in physics
     vis_pref_source=0,      # 0=Signal, 1=Response (which to visualize)
+    # ── Per-particle role heterogeneity ──
+    use_particle_roles=False,    # enable per-particle step/influence scaling
+    role_step_scale_std=0.0,     # std of log-normal step-scale distribution (0 = uniform)
+    role_influence_std=0.0,      # std of log-normal influence distribution (0 = uniform)
+    role_gradient_noise_mean=0.5,  # mean gradient noise (lower = better researcher)
+    role_gradient_noise_std=0.0,   # std of gradient noise distribution (0 = uniform)
+    role_visionary_mean=0.0,       # mean visionary blend weight (0 = no summit sensing)
+    role_visionary_std=0.0,        # std of visionary distribution (0 = uniform)
+    role_visionary_fraction=1.0,   # fraction of particles that can be visionaries (rarity)
+    # -- Dual-space strategy --
+    strategy_enabled=False,          # enable separate strategy vector for mountain navigation
+    strategy_k=3,                    # dimensionality of strategy space (default = same as k)
+    pref_strategy_coupling=0.5,      # how much preferences overlap with strategy (0=independent, 1=identical)
+    strategy_step_size=0.003,        # base step size for strategy movement
+    strategy_memory_enabled=False,   # enable knowledge memory field in strategy space
+    strategy_memory_strength=0.5,    # how strongly knowledge field nudges strategy
+    strategy_memory_write_rate=0.01, # how fast particles deposit into knowledge field
+    strategy_memory_decay=0.999,     # knowledge field decay per step
+    strategy_memory_blur=False,      # apply Gaussian blur to knowledge field
+    strategy_memory_blur_sigma=1.0,  # blur sigma for knowledge field
 )
 
 auto_scale_ref = dict(

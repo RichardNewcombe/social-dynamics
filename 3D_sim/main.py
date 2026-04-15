@@ -42,7 +42,23 @@ from .shaders3d import (
     BOX_VERT, BOX_FRAG,
     LINE_VERT, LINE_FRAG,
     OVERLAY_VERT, OVERLAY_FRAG,
+    MESH_VERT, MESH_FRAG,
 )
+from .mountain_mesh import (
+    generate_mountain_mesh, generate_cost_colors,
+    project_particles_to_surface,
+)
+
+# ── Landscape imports (optional — only needed for mountain mode) ──
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from experiments.landscape import (
+        make_default_landscape, make_default_cost_landscape,
+    )
+    _HAS_LANDSCAPE = True
+except ImportError:
+    _HAS_LANDSCAPE = False
 from .camera3d import OrbitCamera
 from .simulation3d import (
     Simulation, params, auto_scale_ref, INIT_PRESETS,
@@ -58,6 +74,8 @@ WINDOW_W, WINDOW_H = 0, 0
 
 
 def main():
+    """Main entry point.  Use ``--mountain`` to start with the fitness
+    landscape visible and particles constrained to the surface."""
     # ── Initialize GLFW ──
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW")
@@ -260,6 +278,68 @@ def main():
     sim = Simulation()
     running_sim = True
 
+    # ── Mountain landscape setup ──
+    mountain_landscape = None
+    cost_landscape = None
+    vbo_mtn_pos = None
+    vbo_mtn_norm = None
+    vbo_mtn_col = None
+    vbo_cost_col = None
+    ibo_mtn = None
+    vao_mountain = None
+    vao_cost = None
+    mtn_n_indices = 0
+    prog_mesh = ctx.program(vertex_shader=MESH_VERT, fragment_shader=MESH_FRAG)
+
+    def build_mountain_mesh():
+        """(Re)build the mountain and cost mesh GPU buffers."""
+        nonlocal mountain_landscape, cost_landscape
+        nonlocal vbo_mtn_pos, vbo_mtn_norm, vbo_mtn_col, vbo_cost_col
+        nonlocal ibo_mtn, vao_mountain, vao_cost, mtn_n_indices
+
+        if not _HAS_LANDSCAPE:
+            return
+
+        k = params['k']
+        res = params['mountain_resolution']
+        z_scale = params['mountain_z_scale']
+
+        mountain_landscape = make_default_landscape(k=max(k, 2))
+        cost_landscape = make_default_cost_landscape(k=max(k, 2))
+
+        verts, normals, colors_f, indices, _ = generate_mountain_mesh(
+            mountain_landscape, resolution=res, z_scale=z_scale,
+            pref_dims=max(k, 2))
+
+        colors_c, _ = generate_cost_colors(
+            cost_landscape, landscape_k=max(k, 2), resolution=res)
+
+        mtn_n_indices = len(indices)
+
+        # Create GPU buffers
+        vbo_mtn_pos = ctx.buffer(verts.tobytes())
+        vbo_mtn_norm = ctx.buffer(normals.tobytes())
+        vbo_mtn_col = ctx.buffer(colors_f.tobytes())
+        vbo_cost_col = ctx.buffer(colors_c.tobytes())
+        ibo_mtn = ctx.buffer(indices.tobytes())
+
+        # VAO for fitness-colored mountain
+        vao_mountain = ctx.vertex_array(prog_mesh, [
+            (vbo_mtn_pos, '3f', 'in_pos'),
+            (vbo_mtn_norm, '3f', 'in_normal'),
+            (vbo_mtn_col, '3f', 'in_color'),
+        ], index_buffer=ibo_mtn)
+
+        # VAO for cost-colored overlay (same geometry, different colors)
+        vao_cost = ctx.vertex_array(prog_mesh, [
+            (vbo_mtn_pos, '3f', 'in_pos'),
+            (vbo_mtn_norm, '3f', 'in_normal'),
+            (vbo_cost_col, '3f', 'in_color'),
+        ], index_buffer=ibo_mtn)
+
+    # Build initial mountain mesh
+    build_mountain_mesh()
+
     # ── Recording state ──
     rec_process = None
     rec_frame_count = 0
@@ -338,6 +418,15 @@ def main():
             params['step_size'] = ref['step_size'] * scale
             params['neighbor_radius'] = ref['radius'] * scale
         sim.reset()
+        # Mountain mode: sync initial positions to the surface
+        if params['mountain_mode'] and mountain_landscape is not None:
+            mc = getattr(sim, 'strategy', None)
+            if mc is None:
+                mc = sim.prefs
+            proj = project_particles_to_surface(
+                mc, mountain_landscape,
+                z_scale=params['mountain_z_scale'])
+            sim.pos[:, :3] = proj.astype(np.float64)
         rebuild_buffers()
         trail_fbo.use()
         ctx.clear(0, 0, 0)
@@ -399,10 +488,56 @@ def main():
             reuse = params['reuse_neighbors']
             for sub in range(spf):
                 sim.step(reuse_neighbors=(reuse and sub > 0))
+                # Mountain mode: Phase 2 — team-aggregated mountain
+                # navigation in strategy space (like Experiment 5).
+                # sim.step() above handled Phase 1 (social dynamics in
+                # preference space, building the neighbor graph).
+                if params['mountain_mode'] and mountain_landscape is not None:
+                    if sim.strategy is not None:
+                        # Dual-space: navigate in strategy space
+                        summit = mountain_landscape.centers[0][:sim.strategy_k]
+                        sim.strategy_step(
+                            gradient_fn=mountain_landscape.gradient,
+                            summit_center=summit,
+                            cost_landscape=cost_landscape)
+                        mountain_coords = sim.strategy
+                    else:
+                        # Fallback (strategy_enabled=False): nudge prefs
+                        # directly (original Exp 4 behaviour)
+                        grad, _, _ = mountain_landscape.gradient(sim.prefs)
+                        noise = sim.rng.normal(0, 1, grad.shape)
+                        noise *= sim.role_gradient_noise[:, None]
+                        grad = grad + noise
+                        norms = np.linalg.norm(grad, axis=1, keepdims=True)
+                        grad = grad / np.maximum(norms, 1e-12)
+                        vis = sim.role_visionary
+                        if vis.max() > 0:
+                            summit = mountain_landscape.centers[0][:sim.prefs.shape[1]]
+                            to_summit = summit[None, :] - sim.prefs
+                            ts_norm = np.linalg.norm(to_summit, axis=1, keepdims=True)
+                            to_summit = to_summit / np.maximum(ts_norm, 1e-12)
+                            v = vis[:, None]
+                            grad = (1.0 - v) * grad + v * to_summit
+                            norms = np.linalg.norm(grad, axis=1, keepdims=True)
+                            grad = grad / np.maximum(norms, 1e-12)
+                        nudge_strength = params.get('strategy_step_size', 0.003)
+                        sim.prefs += nudge_strength * sim.role_step_scale[:, None] * grad
+                        np.clip(sim.prefs, -1.0, 1.0, out=sim.prefs)
+                        mountain_coords = sim.prefs
+                    # Sync sim.pos to mountain-surface positions so that
+                    # spatial neighbor finding operates on the mountain.
+                    projected = project_particles_to_surface(
+                        mountain_coords, mountain_landscape,
+                        z_scale=params['mountain_z_scale'])
+                    sim.pos[:, :3] = projected.astype(np.float64)
         t_sim = time.perf_counter() - t0
 
         # ── Upload particle data to GPU ──
         positions, colors = sim.get_render_data()
+        # Mountain mode: use the already-synced sim.pos (on the surface)
+        if params['mountain_mode'] and mountain_landscape is not None:
+            # pos was synced above; just ensure float32 for GPU
+            positions = sim.pos[:, :3].astype(np.float32)
         vbo_pos.write(positions.tobytes())
         vbo_col.write(colors.tobytes())
 
@@ -505,6 +640,33 @@ def main():
                 prog_line['mvp'].write(mvp_bytes)
                 prog_line['line_color'] = (1.0, 1.0, 1.0, 0.04)
                 vao_line.render(moderngl.LINES, vertices=n_circle_verts)
+
+        # ── Render mountain mesh (before particles so particles appear on top) ──
+        if params['show_mountain'] and vao_mountain is not None:
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            # Light from above-right (Y is up)
+            light_dir = np.array([0.4, 0.8, 0.3], dtype='f4')
+            light_dir /= np.linalg.norm(light_dir)
+            prog_mesh['mvp'].write(mvp_bytes)
+            prog_mesh['alpha'] = params['mountain_alpha']
+            prog_mesh['light_dir'] = tuple(light_dir)
+            vao_mountain.render(moderngl.TRIANGLES)
+
+        # ── Render cost overlay (slightly offset Z to avoid z-fighting) ──
+        if params['show_cost_overlay'] and vao_cost is not None:
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            light_dir = np.array([0.4, 0.8, 0.3], dtype='f4')
+            light_dir /= np.linalg.norm(light_dir)
+            prog_mesh['mvp'].write(mvp_bytes)
+            prog_mesh['alpha'] = params['cost_alpha']
+            prog_mesh['light_dir'] = tuple(light_dir)
+            # Use polygon offset to prevent z-fighting with mountain
+            _GL.glEnable(_GL.GL_POLYGON_OFFSET_FILL)
+            _GL.glPolygonOffset(-1.0, -1.0)
+            vao_cost.render(moderngl.TRIANGLES)
+            _GL.glDisable(_GL.GL_POLYGON_OFFSET_FILL)
 
         # Render particles
         prog_particle['mvp'].write(mvp_bytes)
@@ -640,6 +802,128 @@ def main():
                    f"El: {math.degrees(camera.elevation):.0f}  "
                    f"Dist: {camera.distance:.1f}")
         imgui.separator()
+
+        # ── Mountain visualization ──
+        if _HAS_LANDSCAPE:
+            if imgui.collapsing_header("Mountain / Cost Landscape"):
+                changed, v = imgui.checkbox("Show Mountain", params['show_mountain'])
+                if changed:
+                    params['show_mountain'] = v
+                    if v and vao_mountain is None:
+                        build_mountain_mesh()
+                imgui.same_line()
+                changed, v = imgui.checkbox("Cost Overlay", params['show_cost_overlay'])
+                if changed:
+                    params['show_cost_overlay'] = v
+                changed, v = imgui.checkbox("Mountain Mode", params['mountain_mode'])
+                if changed:
+                    params['mountain_mode'] = v
+                    if v and not params['strategy_enabled']:
+                        # Auto-enable dual-space with sensible defaults
+                        params['strategy_enabled'] = True
+                        params['strategy_k'] = params['k']
+                        params['pref_strategy_coupling'] = 0.5
+                        params['use_particle_roles'] = True
+                        params['role_influence_std'] = 0.8
+                        params['role_step_scale_std'] = 0.5
+                        params['role_gradient_noise_mean'] = 2.0
+                        params['role_gradient_noise_std'] = 0.5
+                        params['role_visionary_mean'] = 0.05
+                        params['role_visionary_std'] = 0.03
+                        params['cost_weight'] = 0.3
+                        params['strategy_momentum'] = 0.3
+                        params['explore_probability'] = 0.005
+                        params['explore_radius'] = 0.15
+                        do_reset()
+                if params['mountain_mode']:
+                    imgui.same_line()
+                    imgui.text_colored(imgui.ImVec4(0.3, 1.0, 0.3, 1.0),
+                                       "particles on surface")
+                changed, v = imgui.drag_float("Mtn Alpha", params['mountain_alpha'],
+                                              0.01, 0.05, 1.0, "%.2f")
+                if changed:
+                    params['mountain_alpha'] = v
+                changed, v = imgui.drag_float("Cost Alpha", params['cost_alpha'],
+                                              0.01, 0.05, 1.0, "%.2f")
+                if changed:
+                    params['cost_alpha'] = v
+                changed, v = imgui.drag_float("Z Scale", params['mountain_z_scale'],
+                                              0.01, 0.1, 1.0, "%.2f")
+                if changed:
+                    params['mountain_z_scale'] = v
+                    build_mountain_mesh()
+                changed, v = imgui.drag_int("Mesh Res", params['mountain_resolution'],
+                                            1.0, 16, 128)
+                if changed:
+                    params['mountain_resolution'] = v
+                    build_mountain_mesh()
+
+                # ── Dual-space controls ──
+                imgui.spacing()
+                imgui.text("Dual-Space (Strategy)")
+                changed, v = imgui.checkbox("Strategy Enabled", params['strategy_enabled'])
+                if changed:
+                    params['strategy_enabled'] = v
+                    do_reset()  # re-init strategy arrays
+                if params['strategy_enabled']:
+                    changed, v = imgui.drag_float("Coupling", params['pref_strategy_coupling'],
+                                                  0.01, 0.0, 1.0, "%.2f")
+                    if changed:
+                        params['pref_strategy_coupling'] = v
+                    changed, v = imgui.drag_float("Strat Step", params['strategy_step_size'],
+                                                  0.0005, 0.0005, 0.02, "%.4f")
+                    if changed:
+                        params['strategy_step_size'] = v
+                    changed, v = imgui.drag_float("Cost Weight", params['cost_weight'],
+                                                  0.01, 0.0, 2.0, "%.2f")
+                    if changed:
+                        params['cost_weight'] = v
+                    changed, v = imgui.drag_float("Momentum", params['strategy_momentum'],
+                                                  0.01, 0.0, 0.95, "%.2f")
+                    if changed:
+                        params['strategy_momentum'] = v
+                    changed, v = imgui.drag_float("Explore Prob", params['explore_probability'],
+                                                  0.001, 0.0, 0.05, "%.3f")
+                    if changed:
+                        params['explore_probability'] = v
+                    changed, v = imgui.drag_float("Explore Radius", params['explore_radius'],
+                                                  0.01, 0.0, 0.5, "%.2f")
+                    if changed:
+                        params['explore_radius'] = v
+
+                # ── Role controls ──
+                imgui.spacing()
+                imgui.text("Particle Roles")
+                changed, v = imgui.checkbox("Use Roles", params['use_particle_roles'])
+                if changed:
+                    params['use_particle_roles'] = v
+                    do_reset()
+                if params['use_particle_roles']:
+                    changed, v = imgui.drag_float("Influence Std", params['role_influence_std'],
+                                                  0.01, 0.0, 2.0, "%.2f")
+                    if changed:
+                        params['role_influence_std'] = v
+                    changed, v = imgui.drag_float("Step Scale Std", params['role_step_scale_std'],
+                                                  0.01, 0.0, 2.0, "%.2f")
+                    if changed:
+                        params['role_step_scale_std'] = v
+                    changed, v = imgui.drag_float("Grad Noise Mean", params['role_gradient_noise_mean'],
+                                                  0.01, 0.0, 5.0, "%.2f")
+                    if changed:
+                        params['role_gradient_noise_mean'] = v
+                    changed, v = imgui.drag_float("Grad Noise Std", params['role_gradient_noise_std'],
+                                                  0.01, 0.0, 1.0, "%.2f")
+                    if changed:
+                        params['role_gradient_noise_std'] = v
+                    changed, v = imgui.drag_float("Visionary Mean", params['role_visionary_mean'],
+                                                  0.01, 0.0, 1.0, "%.2f")
+                    if changed:
+                        params['role_visionary_mean'] = v
+                    changed, v = imgui.drag_float("Visionary Std", params['role_visionary_std'],
+                                                  0.01, 0.0, 0.5, "%.2f")
+                    if changed:
+                        params['role_visionary_std'] = v
+            imgui.separator()
 
         # ── Live parameters ──
         if imgui.collapsing_header(
@@ -823,4 +1107,35 @@ def main():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='3D Particle Simulation')
+    parser.add_argument('--mountain', action='store_true',
+                        help='Start with mountain surface, cost overlay, and '
+                             'mountain mode enabled')
+    args = parser.parse_args()
+    if args.mountain:
+        from .simulation3d import params as _p3d
+        _p3d['show_mountain'] = True
+        _p3d['show_cost_overlay'] = True
+        _p3d['mountain_mode'] = True
+        # Enable dual-space: strategy separate from preferences (Exp 5)
+        _p3d['strategy_enabled'] = True
+        _p3d['strategy_k'] = _p3d['k']
+        _p3d['pref_strategy_coupling'] = 0.5
+        _p3d['use_particle_roles'] = True
+        _p3d['role_influence_std'] = 0.8
+        _p3d['role_step_scale_std'] = 0.5
+        # High gradient noise: individuals are nearly blind,
+        # teams of ~20 reduce noise by sqrt(20) ≈ 4.5x
+        _p3d['role_gradient_noise_mean'] = 2.0
+        _p3d['role_gradient_noise_std'] = 0.5
+        _p3d['role_visionary_mean'] = 0.05
+        _p3d['role_visionary_std'] = 0.03
+        # Cost-aware movement
+        _p3d['cost_weight'] = 0.3
+        # Momentum for path persistence
+        _p3d['strategy_momentum'] = 0.3
+        # Exploration perturbation
+        _p3d['explore_probability'] = 0.005
+        _p3d['explore_radius'] = 0.15
     main()

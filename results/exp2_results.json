@@ -1,0 +1,998 @@
+[
+  {
+    "solved": false,
+    "solve_step": null,
+    "total_steps": 5000,
+    "wall_time": 24.587060240010032,
+    "log": [
+      {
+        "niches_occupied": 1,
+        "niche_counts": [
+          0,
+          25,
+          0,
+          0
+        ],
+        "total_in_niches": 25,
+        "pref_std": 0.21120487387091524,
+        "step": 200
+      },
+      {
+        "niches_occupied": 1,
+        "niche_counts": [
+          0,
+          72,
+          0,
+          0
+        ],
+        "total_in_niches": 72,
+        "pref_std": 0.2051789712761601,
+        "step": 400
+      },
+      {
+        "niches_occupied": 1,
+        "niche_counts": [
+          0,
+          150,
+          0,
+          0
+        ],
+        "total_in_niches": 150,
+        "pref_std": 0.22491458500129524,
+        "step": 600
+      },
+      {
+        "niches_occupied": 1,
+        "niche_counts": [
+          0,
+          226,
+          0,
+          0
+        ],
+        "total_in_niches": 226,
+        "pref_std": 0.25612937197054525,
+        "step": 800
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          266,
+          29,
+          35
+        ],
+        "total_in_niches": 330,
+        "pref_std": 0.2924638534061321,
+        "step": 1000
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          111,
+          42
+        ],
+        "total_in_niches": 421,
+        "pref_std": 0.32636681251375677,
+        "step": 1200
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          142,
+          42
+        ],
+        "total_in_niches": 452,
+        "pref_std": 0.35639401873850113,
+        "step": 1400
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          142,
+          70
+        ],
+        "total_in_niches": 480,
+        "pref_std": 0.37854564814596364,
+        "step": 1600
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          135,
+          70
+        ],
+        "total_in_niches": 473,
+        "pref_std": 0.38773670138132,
+        "step": 1800
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          142,
+          70
+        ],
+        "total_in_niches": 480,
+        "pref_std": 0.3973068179455201,
+        "step": 2000
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.4058871521679866,
+        "step": 2200
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.410660140525861,
+        "step": 2400
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.4159883396238782,
+        "step": 2600
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.4194392486269565,
+        "step": 2800
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.41943974130489786,
+        "step": 3000
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.41943774869070355,
+        "step": 3200
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.41943743300309455,
+        "step": 3400
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.4194374246704637,
+        "step": 3600
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.41943742471837187,
+        "step": 3800
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.41943742478131485,
+        "step": 4000
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.4194374247844241,
+        "step": 4200
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.419437424784876,
+        "step": 4400
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.4194374247848845,
+        "step": 4600
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.41943742478490725,
+        "step": 4800
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          268,
+          162,
+          70
+        ],
+        "total_in_niches": 500,
+        "pref_std": 0.4194374247849096,
+        "step": 5000
+      }
+    ],
+    "condition": "Uniform s=+0.01",
+    "social_mode": 0,
+    "social": 0.01,
+    "trial": 0
+  },
+  {
+    "solved": false,
+    "solve_step": null,
+    "total_steps": 5000,
+    "wall_time": 23.50145465999958,
+    "log": [
+      {
+        "niches_occupied": 2,
+        "niche_counts": [
+          2,
+          1,
+          0,
+          0
+        ],
+        "total_in_niches": 3,
+        "pref_std": 0.9290605969143891,
+        "step": 200
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9796285798077778,
+        "step": 400
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9883595092861864,
+        "step": 600
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9881367705821718,
+        "step": 800
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9793090961816707,
+        "step": 1000
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9780696654940565,
+        "step": 1200
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9804195557105682,
+        "step": 1400
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9869281166925598,
+        "step": 1600
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.988828133842659,
+        "step": 1800
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9907403702044104,
+        "step": 2000
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9871074789535464,
+        "step": 2200
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9825238999557963,
+        "step": 2400
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9764116784743888,
+        "step": 2600
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9745378685086671,
+        "step": 2800
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9756109471046942,
+        "step": 3000
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.978965299261524,
+        "step": 3200
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9767647036426635,
+        "step": 3400
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9697877140186747,
+        "step": 3600
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9684368457577297,
+        "step": 3800
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9659719622243674,
+        "step": 4000
+      },
+      {
+        "niches_occupied": 1,
+        "niche_counts": [
+          3,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 3,
+        "pref_std": 0.9667952907364942,
+        "step": 4200
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9719979674986692,
+        "step": 4400
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9640973290825171,
+        "step": 4600
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.966146494141063,
+        "step": 4800
+      },
+      {
+        "niches_occupied": 0,
+        "niche_counts": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "total_in_niches": 0,
+        "pref_std": 0.9692884064483898,
+        "step": 5000
+      }
+    ],
+    "condition": "Uniform s=-0.01",
+    "social_mode": 0,
+    "social": -0.01,
+    "trial": 0
+  },
+  {
+    "solved": true,
+    "solve_step": 349,
+    "total_steps": 349,
+    "wall_time": 1.867169033997925,
+    "log": [
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          17,
+          18,
+          15,
+          14
+        ],
+        "total_in_niches": 64,
+        "pref_std": 0.479543000459671,
+        "step": 200
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          18,
+          27,
+          18,
+          15
+        ],
+        "total_in_niches": 78,
+        "pref_std": 0.45529019832611084,
+        "step": 349
+      }
+    ],
+    "condition": "QuietDim s=+0.01",
+    "social_mode": 1,
+    "social": 0.01,
+    "trial": 0
+  },
+  {
+    "solved": false,
+    "solve_step": null,
+    "total_steps": 5000,
+    "wall_time": 26.18046100702486,
+    "log": [
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          15,
+          14,
+          9,
+          44
+        ],
+        "total_in_niches": 82,
+        "pref_std": 0.6665982604026794,
+        "step": 200
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          8,
+          16,
+          6,
+          57
+        ],
+        "total_in_niches": 87,
+        "pref_std": 0.7010136246681213,
+        "step": 400
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          11,
+          14,
+          11,
+          74
+        ],
+        "total_in_niches": 110,
+        "pref_std": 0.7172276973724365,
+        "step": 600
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          7,
+          19,
+          13,
+          78
+        ],
+        "total_in_niches": 117,
+        "pref_std": 0.7299346923828125,
+        "step": 800
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          5,
+          22,
+          10,
+          81
+        ],
+        "total_in_niches": 118,
+        "pref_std": 0.7352599501609802,
+        "step": 1000
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          3,
+          23,
+          6,
+          83
+        ],
+        "total_in_niches": 115,
+        "pref_std": 0.7373921871185303,
+        "step": 1200
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          3,
+          23,
+          6,
+          88
+        ],
+        "total_in_niches": 120,
+        "pref_std": 0.7362282872200012,
+        "step": 1400
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          1,
+          25,
+          9,
+          90
+        ],
+        "total_in_niches": 125,
+        "pref_std": 0.7384135127067566,
+        "step": 1600
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          1,
+          26,
+          4,
+          93
+        ],
+        "total_in_niches": 124,
+        "pref_std": 0.7377330660820007,
+        "step": 1800
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          1,
+          27,
+          3,
+          93
+        ],
+        "total_in_niches": 124,
+        "pref_std": 0.734332263469696,
+        "step": 2000
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          1,
+          30,
+          8,
+          100
+        ],
+        "total_in_niches": 139,
+        "pref_std": 0.7340146899223328,
+        "step": 2200
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          29,
+          11,
+          104
+        ],
+        "total_in_niches": 144,
+        "pref_std": 0.7312231063842773,
+        "step": 2400
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          1,
+          31,
+          3,
+          102
+        ],
+        "total_in_niches": 137,
+        "pref_std": 0.7299382090568542,
+        "step": 2600
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          3,
+          31,
+          2,
+          105
+        ],
+        "total_in_niches": 141,
+        "pref_std": 0.7302227020263672,
+        "step": 2800
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          1,
+          38,
+          1,
+          106
+        ],
+        "total_in_niches": 146,
+        "pref_std": 0.7282155156135559,
+        "step": 3000
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          3,
+          39,
+          2,
+          107
+        ],
+        "total_in_niches": 151,
+        "pref_std": 0.7224636077880859,
+        "step": 3200
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          2,
+          40,
+          3,
+          107
+        ],
+        "total_in_niches": 152,
+        "pref_std": 0.7194969654083252,
+        "step": 3400
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          1,
+          42,
+          0,
+          107
+        ],
+        "total_in_niches": 150,
+        "pref_std": 0.7166765332221985,
+        "step": 3600
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          40,
+          1,
+          107
+        ],
+        "total_in_niches": 148,
+        "pref_std": 0.7141978144645691,
+        "step": 3800
+      },
+      {
+        "niches_occupied": 2,
+        "niche_counts": [
+          0,
+          44,
+          0,
+          107
+        ],
+        "total_in_niches": 151,
+        "pref_std": 0.7101591229438782,
+        "step": 4000
+      },
+      {
+        "niches_occupied": 2,
+        "niche_counts": [
+          0,
+          43,
+          0,
+          108
+        ],
+        "total_in_niches": 151,
+        "pref_std": 0.702239990234375,
+        "step": 4200
+      },
+      {
+        "niches_occupied": 2,
+        "niche_counts": [
+          0,
+          40,
+          0,
+          110
+        ],
+        "total_in_niches": 150,
+        "pref_std": 0.7002077698707581,
+        "step": 4400
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          40,
+          1,
+          110
+        ],
+        "total_in_niches": 151,
+        "pref_std": 0.6982151865959167,
+        "step": 4600
+      },
+      {
+        "niches_occupied": 3,
+        "niche_counts": [
+          0,
+          43,
+          5,
+          111
+        ],
+        "total_in_niches": 159,
+        "pref_std": 0.6958823204040527,
+        "step": 4800
+      },
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          1,
+          49,
+          5,
+          112
+        ],
+        "total_in_niches": 167,
+        "pref_std": 0.6914744973182678,
+        "step": 5000
+      }
+    ],
+    "condition": "QuietDim s=-0.01",
+    "social_mode": 1,
+    "social": -0.01,
+    "trial": 0
+  },
+  {
+    "solved": true,
+    "solve_step": 114,
+    "total_steps": 114,
+    "wall_time": 0.4740514879813418,
+    "log": [
+      {
+        "niches_occupied": 4,
+        "niche_counts": [
+          20,
+          17,
+          15,
+          15
+        ],
+        "total_in_niches": 67,
+        "pref_std": 0.5712277587243642,
+        "step": 114
+      }
+    ],
+    "condition": "No social s=0.0",
+    "social_mode": 0,
+    "social": 0.0,
+    "trial": 0
+  }
+]
