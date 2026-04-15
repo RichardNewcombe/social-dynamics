@@ -66,11 +66,17 @@ $v_{\text{nudge}}$ & Visionary nudge rate toward the hidden global peak \\
 
 \section{Overview}
 
-The Knowledge Manifold experiment introduces a two-layer environment for the social dynamics simulation. Instead of particles directly sensing a hidden fitness landscape, they interact with a \textbf{knowledge manifold} $M$ — a shared, persistent surface representing the organization's accumulated discoveries. 
+The base Social Dynamics Simulator models particles moving through a spatial domain $\mathbf{x}_i \in [0, L)^2$ and interacting via their preference vectors $\mathbf{p}_i \in [-1, 1]^K$. In the base model, social learning and movement are driven entirely by peer-to-peer interactions and spatial memory fields.
 
-Particles (representing teams or individuals) walk on the knowledge manifold. They perform noisy research to "push up" the manifold at their current location. The hidden fitness landscape $F$ acts only as an absolute ceiling; knowledge cannot exceed reality.
+The \textbf{Knowledge Manifold} extension introduces a new environmental layer: an objective, shared surface representing the organization's accumulated discoveries over the preference (skill) space. Rather than preferences shifting solely based on peer popularity, particles now navigate a rugged landscape of objective utility.
 
-This creates a dynamic where teams must collaborate to build knowledge. Because of structural support constraints, a single team cannot build a tall, isolated spire of knowledge. Broad bases of shared understanding are required to support high peaks of specialized expertise.
+Crucially, this introduces a two-layer architecture:
+\begin{enumerate}
+    \item \textbf{The Hidden Fitness Landscape $F$}: The objective truth of what combinations of skills are valuable. This acts as an absolute ceiling; knowledge cannot exceed reality.
+    \item \textbf{The Knowledge Manifold $M$}: The \textit{known} utility surface. Particles perform noisy research to "push up" this manifold at their current preference coordinates.
+\end{enumerate}
+
+This creates a dynamic where teams must collaborate to build knowledge. Because of structural support constraints, a single team cannot build a tall, isolated spire of knowledge. Broad bases of shared understanding are required to support high peaks of specialized expertise. The resulting knowledge heights then feed back into the base social dynamics, causing talent to flow toward the most productive teams.
 
 \section{The Hidden Fitness Landscape}
 
@@ -136,7 +142,9 @@ where $*$ denotes convolution with a Gaussian kernel of standard deviation $\sig
 
 \section{Particle Movement}
 
-Particle movement in the skill dimensions ($p_0, p_1$) is governed by three forces: knowledge gradient climbing, visionary nudges, and adaptive exploration noise. (Movement in the social dimension $p_2$ is governed by standard social dynamics).
+In the base model, particle preferences $\mathbf{p}_i$ shift primarily via the social learning rule (moving toward/away from neighbors) and the spatial memory field. 
+
+The Knowledge Manifold introduces three additional forces to the skill dimensions ($p_0, p_1$) of the preference vector: knowledge gradient climbing, visionary nudges, and adaptive exploration noise. (The social dimension $p_2$ continues to be governed purely by the base social dynamics).
 
 \subsection{Knowledge Gradient Climbing}
 
@@ -188,18 +196,24 @@ The exponential position term ($\alpha=3.0$) creates winner-take-all dynamics, m
 \caption{Reward scaling functions. (a) The exponential position term creates winner-take-all dynamics, where teams at $h=0.8$ are substantially more rewarded than teams at $h=0.4$. (b) The combined reward includes a bonus for active knowledge growth.}
 \end{figure}
 
-\subsection{Reward-Modulated Social Nudge}
+\subsection{Reward-Modulated Social Learning}
 
-Particles maintain an exponential moving average of their reward, $\bar{R}_i$. This reward modulates the social dynamics. After the standard neighbor selection and social averaging, an additional nudge pulls particles toward their most successful neighbors:
+In the base model, social learning shifts a particle's preferences toward its neighbors:
+\begin{equation}
+\mathbf{p}_i \leftarrow (1 - \eta_{\text{soc}})\mathbf{p}_i + \eta_{\text{soc}} \bar{\mathbf{p}}_{\mathcal{N}(i)}
+\end{equation}
+where $\bar{\mathbf{p}}_{\mathcal{N}(i)}$ is the unweighted mean of the neighbor preferences.
+
+The Knowledge Manifold extension introduces a \textbf{reward-modulated social nudge}. Particles maintain an exponential moving average of their reward, $\bar{R}_i$. After the standard social learning step, an additional pass pulls particles toward their most successful neighbors, using weights proportional to neighbor reward:
 
 \begin{equation}
 w_{ij} = 1 + \rho \max(\bar{R}_j, 0)
 \end{equation}
 \begin{equation}
-p_i \leftarrow (1 - \eta_{\text{soc}}) p_i + \eta_{\text{soc}} \sum_{j \in \mathcal{N}(i)} \frac{w_{ij}}{\sum w_{ik}} p_j
+\mathbf{p}_i \leftarrow (1 - \eta_{\text{reward}}) \mathbf{p}_i + \eta_{\text{reward}} \sum_{j \in \mathcal{N}(i)} \frac{w_{ij}}{\sum_k w_{ik}} \mathbf{p}_j
 \end{equation}
 
-where $\rho$ is the social reward scale. This creates a flow of talent toward the most productive teams.
+where $\rho$ is the social reward scale, and $\eta_{\text{reward}}$ is typically a fraction of $\eta_{\text{soc}}$ to avoid completely overriding the base dynamics. This creates a powerful macroeconomic effect: talent and attention naturally flow toward the most productive teams, driving further discovery in those regions.
 
 \section{Simulation Results}
 
