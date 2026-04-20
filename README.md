@@ -6,7 +6,7 @@ Preference-directed particle simulation exploring emergent complex dynamics from
 
 ## Quick Start
 
-Must run from **Terminal.app** on macOS for hardware GPU acceleration.
+Requires a terminal with GPU access. On macOS, if you see "Software Renderer" warnings, try Terminal.app instead of VS Code's integrated terminal.
 
 ```bash
 cd gpu
