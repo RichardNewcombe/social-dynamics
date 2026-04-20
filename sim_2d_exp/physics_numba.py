@@ -130,7 +130,8 @@ def _step_inner_prod_avg(pos, prefs, response, nbr_ids, valid, L, k,
 def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                   step_size, repulsion, social, social_dist_weight,
                   dir_memory, pref_weighted, pref_inner,
-                  pref_dist_weight, pref_dist_sigma, best_mode):
+                  pref_dist_weight, pref_dist_sigma, best_mode,
+                  boltzmann_beta=5.0, ignore_self_pref=False):
     """Per-dimension physics step.
 
     Neighbor selection uses prefs (signal).
@@ -181,8 +182,71 @@ def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                     wy /= wc
                 new_dm[i, ki, 0] = dir_memory * dir_matrix[i, ki, 0] + (1.0 - dir_memory) * wx
                 new_dm[i, ki, 1] = dir_memory * dir_matrix[i, ki, 1] + (1.0 - dir_memory) * wy
-                mx += response[i, ki] * new_dm[i, ki, 0]
-                my += response[i, ki] * new_dm[i, ki, 1]
+                self_w = 1.0 if ignore_self_pref else response[i, ki]
+                mx += self_w * new_dm[i, ki, 0]
+                my += self_w * new_dm[i, ki, 1]
+            elif best_mode == 3:
+                # Boltzmann (corrected): separates direction from signal weighting
+                # Converges exactly to hard argmax as β→∞:
+                #   movement[d] = response[i,d] * signal[j*,d] * dir_to(j*)
+                beta = boltzmann_beta
+                # Two-pass for numerical stability
+                max_score = -1e30
+                for j in range(n_nbr):
+                    if not valid[i, j]:
+                        continue
+                    nj = nbr_ids[i, j]
+                    sc = beta * prefs[nj, ki]
+                    if sc > max_score:
+                        max_score = sc
+                if max_score < -1e29:
+                    new_dm[i, ki, 0] = dir_memory * dir_matrix[i, ki, 0]
+                    new_dm[i, ki, 1] = dir_memory * dir_matrix[i, ki, 1]
+                    continue
+                # Second pass: accumulate
+                w_sum = 0.0
+                dx_sum, dy_sum = 0.0, 0.0  # pure direction average
+                sig_sum = 0.0               # weighted signal average
+                for j in range(n_nbr):
+                    if not valid[i, j]:
+                        continue
+                    nj = nbr_ids[i, j]
+                    w = np.exp(beta * prefs[nj, ki] - max_score)
+                    if pref_dist_weight:
+                        ddx = pos[nj, 0] - pos[i, 0]
+                        ddy = pos[nj, 1] - pos[i, 1]
+                        ddx -= L * round(ddx / L)
+                        ddy -= L * round(ddy / L)
+                        dd = (ddx * ddx + ddy * ddy) ** 0.5
+                        gw = np.exp(-dd * dd / (2.0 * pref_dist_sigma * pref_dist_sigma))
+                        w *= gw
+                    w_sum += w
+                    sig_sum += w * prefs[nj, ki]
+                    # Direction (pure, no signal multiplication)
+                    dx = pos[nj, 0] - pos[i, 0]
+                    dy = pos[nj, 1] - pos[i, 1]
+                    dx -= L * round(dx / L)
+                    dy -= L * round(dy / L)
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist > 1e-12:
+                        dx_sum += w * dx / dist
+                        dy_sum += w * dy / dist
+                if w_sum > 1e-30:
+                    dx_sum /= w_sum
+                    dy_sum /= w_sum
+                    sig_sum /= w_sum
+                new_dm[i, ki, 0] = dir_memory * dir_matrix[i, ki, 0] + (1.0 - dir_memory) * dx_sum
+                new_dm[i, ki, 1] = dir_memory * dir_matrix[i, ki, 1] + (1.0 - dir_memory) * dy_sum
+                self_w = 1.0 if ignore_self_pref else response[i, ki]
+                compat = self_w * sig_sum
+                if pref_inner:
+                    ip = 0.0
+                    for di in range(k):
+                        ip += response[i, di] * prefs[i, di]
+                    ip /= k
+                    compat *= ip
+                mx += compat * new_dm[i, ki, 0]
+                my += compat * new_dm[i, ki, 1]
             else:
                 best_val = -1e30
                 best_nj = -1
@@ -221,7 +285,8 @@ def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                 new_dm[i, ki, 0] = dir_memory * dir_matrix[i, ki, 0] + (1.0 - dir_memory) * ux
                 new_dm[i, ki, 1] = dir_memory * dir_matrix[i, ki, 1] + (1.0 - dir_memory) * uy
                 # Compatibility: response[i] * signal[j*]
-                compat = response[i, ki] * prefs[best_nj, ki]
+                self_w = 1.0 if ignore_self_pref else response[i, ki]
+                compat = self_w * prefs[best_nj, ki]
                 if pref_inner:
                     ip = 0.0
                     for di in range(k):
@@ -323,4 +388,8 @@ def warmup_numba_physics():
                          0.005, 0.0, 0.0, False, False, 0.01)
     _step_per_dim(pos, prefs, resp, dm, nbr, valid, 1.0, 3,
                   0.005, 0.0, 0.0, False, 0.0, False, False,
-                  False, 0.01, 0)
+                  False, 0.01, 0, 5.0, False)
+    # Also warmup Boltzmann mode
+    _step_per_dim(pos, prefs, resp, dm, nbr, valid, 1.0, 3,
+                  0.005, 0.0, 0.0, False, 0.0, False, False,
+                  False, 0.01, 3, 5.0, False)

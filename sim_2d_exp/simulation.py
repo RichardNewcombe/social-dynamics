@@ -85,9 +85,20 @@ class Simulation:
         self.tracked = np.zeros(n, dtype=bool)
         self.tracked_seed = np.zeros(n, dtype=bool)
 
-        # Spatial memory field: (G, G, K)
+        # Delaunay visualization (1-hop edges + positions at time of computation)
+        self._delaunay_1hop_nbr_ids = None
+        self._delaunay_1hop_valid = None
+        self._delaunay_pos = None  # positions when Delaunay was computed
+
+        # Spatial memory fields
         G = params['grid_res']
-        self.memory_field = np.zeros((G, G, k), dtype=np.float64)
+        self.memory_field = np.zeros((G, G, k), dtype=np.float64)  # pref deposit
+        self.memory_flow = np.zeros((G, G, 2), dtype=np.float64)   # movement/compat deposit
+
+        # Per-particle position EMA
+        pos_dtype = np.float64 if params['use_f64'] else np.float32
+        self.pos_ema = self.pos.copy()
+        self.pos_velocity = np.zeros((n, 2), dtype=pos_dtype)  # current - ema
 
     # ── Initialisation helpers ──────────────────────────────────────
 
@@ -229,6 +240,12 @@ class Simulation:
 
         _tb0 = time.perf_counter()
 
+        # ── Delaunay triangulation mode ──
+        if nbr_mode == 3:
+            self._find_neighbors_delaunay(pos, n, _tb0)
+            self._t_search = self._t_build + self._t_query
+            return
+
         if knn_method == 0:
             self._find_neighbors_hash(pos, n, nbr_mode, n_nbr, radius, _tb0)
         else:
@@ -321,6 +338,141 @@ class Simulation:
             self.nbr_ids = nbr_ids
             self._valid_mask = None
 
+    def _find_neighbors_delaunay(self, pos, n, _tb0):
+        """Delaunay triangulation neighbor finding (periodic).
+
+        Optimized:
+        - Only replicates boundary particles (not full 3x3)
+        - Caches triangulation, recomputes on interval or displacement
+        - h-hop neighbors via sparse adjacency matrix power
+        - 1-hop edges stored separately for visualization
+        """
+        from scipy import sparse
+        try:
+            import triangle as _tri_lib
+            _use_triangle = True
+        except ImportError:
+            from scipy.spatial import Delaunay
+            _use_triangle = False
+
+        pos_f64 = pos.astype(np.float64) % SPACE
+        L = SPACE
+
+        # Estimate boundary margin: ~3x average spacing
+        margin = 3.0 * (L / max(np.sqrt(n), 1.0))
+        margin = min(margin, L * 0.5)
+
+        # Find boundary particles (near any edge of [0, L))
+        boundary = ((pos_f64[:, 0] < margin) | (pos_f64[:, 0] > L - margin) |
+                     (pos_f64[:, 1] < margin) | (pos_f64[:, 1] > L - margin))
+        bnd_idx = np.where(boundary)[0]
+        bnd_pos = pos_f64[bnd_idx]
+
+        # Replicate only boundary particles at 8 periodic offsets
+        offsets = [(-L, -L), (-L, 0), (-L, L),
+                   (0, -L),           (0, L),
+                   (L, -L),  (L, 0),  (L, L)]
+        replicas = [bnd_pos + np.array(off) for off in offsets]
+        n_bnd = len(bnd_idx)
+        extended_pos = np.vstack([pos_f64] + replicas)
+
+        self._t_build = time.perf_counter() - _tb0
+        _tq0 = time.perf_counter()
+
+        # Triangulate using fastest available library
+        if _use_triangle:
+            result = _tri_lib.triangulate({'vertices': extended_pos}, opts='Qz')
+            simplices = result['triangles']
+        else:
+            tri = Delaunay(extended_pos)
+            simplices = tri.simplices
+
+        # Map all vertex indices to original particle indices
+        verts = simplices.ravel()  # (3M,)
+        if n_bnd > 0:
+            orig_verts = np.where(verts < n, verts,
+                                  bnd_idx[(verts - n) % n_bnd])
+        else:
+            orig_verts = verts.copy()
+        orig_simplices = orig_verts.reshape(-1, 3)  # (M, 3)
+
+        # Keep only simplices with at least one original (non-replica) vertex
+        has_orig = (simplices < n).any(axis=1)  # (M,)
+        is_orig = simplices < n  # (M, 3) — which verts are original
+
+        # Extract directed edges: for each original vertex, connect to other 2
+        # Edge pairs: (0,1), (0,2), (1,0), (1,2), (2,0), (2,1)
+        edge_pairs = [(0,1), (0,2), (1,0), (1,2), (2,0), (2,1)]
+        all_rows = []
+        all_cols = []
+        for a, b in edge_pairs:
+            # Only from original vertices
+            mask = has_orig & is_orig[:, a]
+            r = orig_simplices[mask, a]
+            c = orig_simplices[mask, b]
+            # Remove self-loops
+            valid = r != c
+            all_rows.append(r[valid])
+            all_cols.append(c[valid])
+
+        rows_arr = np.concatenate(all_rows).astype(np.int32)
+        cols_arr = np.concatenate(all_cols).astype(np.int32)
+
+        # Build sparse adjacency matrix
+        if len(rows_arr) > 0:
+            data = np.ones(len(rows_arr), dtype=np.int8)
+            A = sparse.csr_matrix((data, (rows_arr, cols_arr)), shape=(n, n))
+            A = (A > 0).astype(np.int8)
+        else:
+            A = sparse.csr_matrix((n, n), dtype=np.int8)
+
+        def _csr_to_padded(csr_mat, remove_self=False):
+            indptr = csr_mat.indptr
+            indices = csr_mat.indices
+            counts = np.diff(indptr)
+            max_k = max(int(counts.max()), 1)
+            nn = csr_mat.shape[0]
+            nbr = np.zeros((nn, max_k), dtype=np.int64)
+            val = np.zeros((nn, max_k), dtype=bool)
+            for i in range(nn):
+                s, e = indptr[i], indptr[i+1]
+                js = indices[s:e]
+                if remove_self:
+                    js = js[js != i]
+                k = min(len(js), max_k)
+                nbr[i, :k] = js[:k]
+                val[i, :k] = True
+            return nbr, val, max_k
+
+        # 1-hop padded arrays for visualization
+        A_csr = A.tocsr()
+        nbr_1hop, valid_1hop, _ = _csr_to_padded(A_csr)
+        self._delaunay_1hop_nbr_ids = nbr_1hop
+        self._delaunay_1hop_valid = valid_1hop
+        self._delaunay_pos = pos_f64.copy()
+
+        # h-hop reachability via sparse matrix power
+        hops = max(1, params['delaunay_hops'])
+        if hops == 1:
+            reach_csr = A_csr
+        else:
+            reach = A_csr.copy()
+            Ak = A_csr.copy()
+            for _ in range(hops - 1):
+                Ak = Ak.dot(A_csr)
+                reach = reach + Ak
+            reach = (reach > 0).astype(np.int8)
+            reach.eliminate_zeros()
+            reach_csr = reach.tocsr()
+
+        # Convert to padded arrays
+        nbr_ids, valid_mask, max_nbr = _csr_to_padded(reach_csr, remove_self=True)
+
+        self._t_query = time.perf_counter() - _tq0
+        self.nbr_ids = nbr_ids
+        self._valid_mask = valid_mask
+        self._n_nbrs = max_nbr
+
     def _debug_knn(self, pos, n_nbr):
         """Compare hash grid KNN results against cKDTree reference."""
         pos_f64 = pos.astype(np.float64) % SPACE
@@ -365,28 +517,101 @@ class Simulation:
 
     def step(self, reuse_neighbors=False):
         """Run one simulation step (neighbor find + physics + post-processing)."""
+        # ── Position EMA: optionally modify position for physics ──
+        pos_real = None
+        ema_mode = params['pos_ema_mode'] if params['pos_ema_enabled'] else 0
+        if ema_mode == 1:
+            # Predict: run physics from linearly extrapolated position
+            pos_real = self.pos.copy()
+            velocity = self.pos - self.pos_ema
+            velocity -= SPACE * np.round(velocity / SPACE)
+            self.pos = (self.pos + velocity) % SPACE
+        elif ema_mode == 2:
+            # EMA: run physics from the smoothed historical position
+            pos_real = self.pos.copy()
+            self.pos = self.pos_ema.copy()
+
         # ── Memory field: read (modulate preferences before physics) ──
         prefs_backup = None
         resp_backup = None
         modulated_prefs_pre = None
         modulated_resp_pre = None
         if params['memory_field']:
+            # Resize fields if grid_res changed
+            G_want = params['grid_res']
+            if self.memory_field.shape[0] != G_want:
+                self.memory_field = np.zeros((G_want, G_want, self.k), dtype=np.float64)
+                self.memory_flow = np.zeros((G_want, G_want, 2), dtype=np.float64)
             prefs_backup = self.prefs.copy()
             strength = params['memory_strength']
+            deposit_mode = params['memory_deposit_mode']
             G = self.memory_field.shape[0]
             inv_cell = G / SPACE
             cx = (self.pos[:, 0] * inv_cell).astype(int) % G
             cy = (self.pos[:, 1] * inv_cell).astype(int) % G
-            field_at_particle = self.memory_field[cy, cx]  # (N, K)
-            # Multiplicative gate: amplify/dampen preferences
-            self.prefs = (self.prefs * (1.0 + strength * field_at_particle)
-                          ).clip(-1, 1).astype(self._pref_dtype)
-            modulated_prefs_pre = self.prefs.copy()  # save for delta computation
+
             if params['use_signal_response']:
                 resp_backup = self.response.copy()
-                self.response = (self.response * (1.0 + strength * field_at_particle)
-                                 ).clip(-1, 1).astype(self._pref_dtype)
+
+            if deposit_mode == 0 and strength != 0.0:
+                # Pref deposit: multiplicative gate on preferences
+                field_at_particle = self.memory_field[cy, cx]  # (N, K)
+                self.prefs = (self.prefs * (1.0 + strength * field_at_particle)
+                              ).clip(-1, 1).astype(self._pref_dtype)
+                if params['use_signal_response']:
+                    self.response = (self.response * (1.0 + strength * field_at_particle)
+                                     ).clip(-1, 1).astype(self._pref_dtype)
+            elif deposit_mode in (1, 2) and strength != 0.0:
+                # Flow deposit: direct flow-following force
+                # Multiply by step_size to match physics scale (pos += step_size * movement)
+                flow_at_particle = self.memory_flow[cy, cx]  # (N, 2)
+                step_size = params['step_size']
+                flow_force = strength * flow_at_particle
+                self.pos = (self.pos + step_size * flow_force) % SPACE
+                self._movement += flow_force
+
+            modulated_prefs_pre = self.prefs.copy()
+            if params['use_signal_response']:
                 modulated_resp_pre = self.response.copy()
+
+        # ── Graph diffusion: multi-hop preference blending ──
+        prefs_pre_diff = None
+        resp_pre_diff = None
+        if params['graph_diffusion']:
+            prefs_pre_diff = self.prefs.copy()
+            H = max(0, params['graph_diff_hops'])
+            alpha = params['graph_diff_alpha']
+            # Need neighbors — ensure they exist
+            if self.nbr_ids is None:
+                self._find_neighbors()
+            nbr_ids = self.nbr_ids
+            valid = self._valid_mask
+            has_mask = valid is not None
+            if has_mask:
+                n_valid_d = valid.sum(axis=1).clip(1)
+            # Diffuse signal prefs
+            eff = self.prefs.astype(np.float64)
+            for _ in range(H):
+                nbr_eff = eff[nbr_ids]
+                if has_mask:
+                    nbr_eff = nbr_eff * valid[:, :, None]
+                    nbr_mean = nbr_eff.sum(axis=1) / n_valid_d[:, None]
+                else:
+                    nbr_mean = nbr_eff.mean(axis=1)
+                eff = (1.0 - alpha) * eff + alpha * nbr_mean
+            self.prefs = np.clip(eff, -1, 1).astype(self._pref_dtype)
+            if params['use_signal_response']:
+                resp_pre_diff = self.response.copy()
+                eff_r = self.response.astype(np.float64)
+                for _ in range(H):
+                    nbr_eff_r = eff_r[nbr_ids]
+                    if has_mask:
+                        nbr_eff_r = nbr_eff_r * valid[:, :, None]
+                        nbr_mean_r = nbr_eff_r.sum(axis=1) / n_valid_d[:, None]
+                    else:
+                        nbr_mean_r = nbr_eff_r.mean(axis=1)
+                    eff_r = (1.0 - alpha) * eff_r + alpha * nbr_mean_r
+                self.response = np.clip(eff_r, -1, 1).astype(self._pref_dtype)
 
         # Swap arrays so physics sees response-as-signal and vice versa
         swapped = params['use_signal_response'] and params['swap_signal_response']
@@ -395,6 +620,12 @@ class Simulation:
         self._step_impl(reuse_neighbors)
         if swapped:
             self.prefs, self.response = self.response, self.prefs
+
+        # ── Graph diffusion: restore original prefs ──
+        if prefs_pre_diff is not None:
+            self.prefs = prefs_pre_diff
+            if resp_pre_diff is not None:
+                self.response = resp_pre_diff
 
         # ── Memory field: capture social delta, restore, write, decay ──
         if params['memory_field'] and prefs_backup is not None:
@@ -413,28 +644,112 @@ class Simulation:
                     resp_backup.astype(np.float64) + resp_delta, -1, 1
                 ).astype(self._pref_dtype)
 
-            # Write: deposit particle preferences into the field
+            # Write: deposit into field based on mode
             write_rate = params['memory_write_rate']
+            deposit_mode = params['memory_deposit_mode']
             G = self.memory_field.shape[0]
             inv_cell = G / SPACE
             cx = (self.pos[:, 0] * inv_cell).astype(int) % G
             cy = (self.pos[:, 1] * inv_cell).astype(int) % G
-            # Accumulate preferences into grid cells
             k = self.k
-            for d in range(k):
-                np.add.at(self.memory_field[:, :, d], (cy, cx),
-                          write_rate * self.prefs[:, d].astype(np.float64))
 
-            # Decay
+            if deposit_mode == 0:
+                # Deposit raw preferences → (G, G, K) field
+                for d in range(k):
+                    np.add.at(self.memory_field[:, :, d], (cy, cx),
+                              write_rate * self.prefs[:, d].astype(np.float64))
+            elif deposit_mode == 1:
+                # Deposit movement vector → (G, G, 2) flow field
+                mov = self._movement.astype(np.float64)
+                np.add.at(self.memory_flow[:, :, 0], (cy, cx), write_rate * mov[:, 0])
+                np.add.at(self.memory_flow[:, :, 1], (cy, cx), write_rate * mov[:, 1])
+            elif deposit_mode == 2:
+                # Deposit compatibility-weighted direction → (G, G, 2) flow field
+                # Compat-weighted = movement (since movement IS the sum of
+                # compat * direction across dims). Normalize per particle
+                # to get the direction of the net force, not its magnitude.
+                mov = self._movement.astype(np.float64)
+                mag = np.linalg.norm(mov, axis=1, keepdims=True)
+                mag = np.maximum(mag, 1e-12)
+                unit_mov = mov / mag
+                np.add.at(self.memory_flow[:, :, 0], (cy, cx), write_rate * unit_mov[:, 0])
+                np.add.at(self.memory_flow[:, :, 1], (cy, cx), write_rate * unit_mov[:, 1])
+
+            # Decay both fields
             self.memory_field *= params['memory_decay']
+            self.memory_flow *= params['memory_decay']
 
-            # Blur (diffuse the field spatially)
+            # Blur (diffuse both fields spatially)
             if params['memory_blur'] and params['memory_blur_sigma'] > 0:
                 from scipy.ndimage import gaussian_filter
+                sigma = params['memory_blur_sigma']
                 for d in range(k):
                     self.memory_field[:, :, d] = gaussian_filter(
-                        self.memory_field[:, :, d],
-                        sigma=params['memory_blur_sigma'], mode='wrap')
+                        self.memory_field[:, :, d], sigma=sigma, mode='wrap')
+                for d in range(2):
+                    self.memory_flow[:, :, d] = gaussian_filter(
+                        self.memory_flow[:, :, d], sigma=sigma, mode='wrap')
+
+            # Field gradient forces
+            pull = params['memory_gradient_pull']
+            curl = params['memory_gradient_curl']
+            if pull != 0.0 or curl != 0.0:
+                G = self.memory_field.shape[0]
+                cell_size = SPACE / G
+                inv_2cell = 0.5 / cell_size
+                inv_cell = G / SPACE
+                px = (self.pos[:, 0] * inv_cell).astype(int) % G
+                py = (self.pos[:, 1] * inv_cell).astype(int) % G
+
+                total_force = np.zeros((self.n, 2), dtype=np.float64)
+
+                if deposit_mode == 0:
+                    # Pref field: gradient forces weighted by particle preferences
+                    for d in range(k):
+                        field_d = self.memory_field[:, :, d]
+                        gx = (np.roll(field_d, -1, axis=1) - np.roll(field_d, 1, axis=1)) * inv_2cell
+                        gy = (np.roll(field_d, -1, axis=0) - np.roll(field_d, 1, axis=0)) * inv_2cell
+                        pd = self.prefs[:, d].astype(np.float64)
+                        # Divergence (curl-free): pref[d] * ∇field[d]
+                        if pull != 0.0:
+                            total_force[:, 0] += pull * pd * gx[py, px]
+                            total_force[:, 1] += pull * pd * gy[py, px]
+                        # Curl (div-free): pref[d] * ∇⊥field[d]
+                        if curl != 0.0:
+                            total_force[:, 0] += curl * pd * gy[py, px]
+                            total_force[:, 1] -= curl * pd * gx[py, px]
+                else:
+                    # Flow field: proper vector calculus operations
+                    flow_x = self.memory_flow[:, :, 0]
+                    flow_y = self.memory_flow[:, :, 1]
+                    # Partial derivatives of flow components
+                    dfx_dx = (np.roll(flow_x, -1, axis=1) - np.roll(flow_x, 1, axis=1)) * inv_2cell
+                    dfx_dy = (np.roll(flow_x, -1, axis=0) - np.roll(flow_x, 1, axis=0)) * inv_2cell
+                    dfy_dx = (np.roll(flow_y, -1, axis=1) - np.roll(flow_y, 1, axis=1)) * inv_2cell
+                    dfy_dy = (np.roll(flow_y, -1, axis=0) - np.roll(flow_y, 1, axis=0)) * inv_2cell
+
+                    if pull != 0.0:
+                        # Divergence of flow: div(F) = ∂Fx/∂x + ∂Fy/∂y (scalar)
+                        # Gradient of divergence → converge toward flow sinks
+                        div_field = dfx_dx + dfy_dy
+                        div_gx = (np.roll(div_field, -1, axis=1) - np.roll(div_field, 1, axis=1)) * inv_2cell
+                        div_gy = (np.roll(div_field, -1, axis=0) - np.roll(div_field, 1, axis=0)) * inv_2cell
+                        total_force[:, 0] += pull * div_gx[py, px]
+                        total_force[:, 1] += pull * div_gy[py, px]
+
+                    if curl != 0.0:
+                        # Curl/vorticity of flow: ω = ∂Fy/∂x - ∂Fx/∂y (scalar in 2D)
+                        # Gradient of vorticity → move toward vortex centers
+                        vort_field = dfy_dx - dfx_dy
+                        vort_gx = (np.roll(vort_field, -1, axis=1) - np.roll(vort_field, 1, axis=1)) * inv_2cell
+                        vort_gy = (np.roll(vort_field, -1, axis=0) - np.roll(vort_field, 1, axis=0)) * inv_2cell
+                        total_force[:, 0] += curl * vort_gx[py, px]
+                        total_force[:, 1] += curl * vort_gy[py, px]
+
+                step_size = params['step_size']
+                self.pos = (self.pos + step_size * total_force) % SPACE
+                self._movement += total_force
+
         if params['social_mode'] == 1 and params['social'] != 0:
             self._quiet_dim_social()
         # Response social learning (same rate as signal, applied post-step)
@@ -468,6 +783,105 @@ class Simulation:
             self.expand_tracked()
         elif mode == 1:
             self.update_tracked_with_neighbors()
+
+        # ── Position EMA: restore real position and update EMA ──
+        if params['pos_ema_enabled']:
+            if pos_real is not None:
+                # Physics ran from a modified position (predicted or EMA).
+                # Extract the movement delta and apply to real position.
+                if ema_mode == 1:
+                    # Predicted input was: pos_real + velocity
+                    predicted = pos_real + (pos_real - self.pos_ema)
+                    predicted -= SPACE * np.round((predicted - pos_real) / SPACE)
+                else:
+                    # EMA input was: pos_ema
+                    predicted = self.pos_ema
+                delta = self.pos - predicted
+                delta -= SPACE * np.round(delta / SPACE)
+                self.pos = (pos_real + delta) % SPACE
+
+            # Update EMA with periodic-aware averaging
+            decay = params['pos_ema_decay']
+            diff = self.pos - self.pos_ema
+            diff -= SPACE * np.round(diff / SPACE)  # shortest periodic path
+            self.pos_ema = (self.pos_ema + (1.0 - decay) * diff) % SPACE
+
+            # Velocity estimate (smoothed by EMA)
+            self.pos_velocity = self.pos - self.pos_ema
+            self.pos_velocity -= SPACE * np.round(self.pos_velocity / SPACE)
+
+        # ── Recompute Delaunay visualization from post-step positions ──
+        if params['neighbor_mode'] == 3 and params['show_neighbors']:
+            self._recompute_delaunay_viz()
+
+    def _recompute_delaunay_viz(self):
+        """Recompute 1-hop Delaunay edges from current positions for visualization."""
+        try:
+            import triangle as _tri_lib
+            _use_tri = True
+        except ImportError:
+            from scipy.spatial import Delaunay
+            _use_tri = False
+        from scipy import sparse
+
+        pos_f64 = self.pos.astype(np.float64) % SPACE
+        n = self.n
+        L = SPACE
+        margin = 3.0 * (L / max(np.sqrt(n), 1.0))
+        margin = min(margin, L * 0.5)
+
+        boundary = ((pos_f64[:, 0] < margin) | (pos_f64[:, 0] > L - margin) |
+                     (pos_f64[:, 1] < margin) | (pos_f64[:, 1] > L - margin))
+        bnd_idx = np.where(boundary)[0]
+        bnd_pos = pos_f64[bnd_idx]
+        offsets = [(-L,-L),(-L,0),(-L,L),(0,-L),(0,L),(L,-L),(L,0),(L,L)]
+        replicas = [bnd_pos + np.array(off) for off in offsets]
+        n_bnd = len(bnd_idx)
+        extended = np.vstack([pos_f64] + replicas)
+
+        if _use_tri:
+            result = _tri_lib.triangulate({'vertices': extended}, opts='Qz')
+            simplices = result['triangles']
+        else:
+            tri = Delaunay(extended)
+            simplices = tri.simplices
+
+        # Vectorized edge extraction (same as _find_neighbors_delaunay)
+        verts = simplices.ravel()
+        if n_bnd > 0:
+            orig_verts = np.where(verts < n, verts,
+                                  bnd_idx[(verts - n) % n_bnd])
+        else:
+            orig_verts = verts.copy()
+        orig_simplices = orig_verts.reshape(-1, 3)
+        has_orig = (simplices < n).any(axis=1)
+        is_orig = simplices < n
+
+        all_rows, all_cols = [], []
+        for a, b in [(0,1),(0,2),(1,0),(1,2),(2,0),(2,1)]:
+            mask = has_orig & is_orig[:, a]
+            r = orig_simplices[mask, a]
+            c = orig_simplices[mask, b]
+            v = r != c
+            all_rows.append(r[v])
+            all_cols.append(c[v])
+        rows = np.concatenate(all_rows).astype(np.int32)
+        cols = np.concatenate(all_cols).astype(np.int32)
+
+        if len(rows) > 0:
+            A = sparse.csr_matrix((np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(n, n))
+            A = (A > 0).astype(np.int8)
+            A_csr = A.tocsr()
+            max_k = max(int(A_csr.getnnz(axis=1).max()), 1)
+            nbr = np.zeros((n, max_k), dtype=np.int64)
+            val = np.zeros((n, max_k), dtype=bool)
+            for i in range(n):
+                js = A_csr.indices[A_csr.indptr[i]:A_csr.indptr[i+1]]
+                nn = len(js)
+                nbr[i, :nn] = js
+                val[i, :nn] = True
+            self._delaunay_1hop_nbr_ids = nbr
+            self._delaunay_1hop_valid = val
 
     def _step_impl(self, reuse_neighbors=False):
         """Core physics step — dispatches to Numba, NumPy, or PyTorch engine."""
@@ -594,6 +1008,8 @@ class Simulation:
                 social, params['social_dist_weight'],
                 pref_weighted, pref_inner, inner_avg,
                 pref_dist_w, pref_dist_sigma, best_mode,
+                boltzmann_beta=params['boltzmann_beta'],
+                ignore_self_pref=params['ignore_self_pref'],
                 torch_precision=params['torch_precision'],
                 torch_device_idx=params['torch_device'])
             self.pos = new_pos.astype(pos.dtype)
@@ -632,7 +1048,9 @@ class Simulation:
                 SPACE, k, step_size, repulsion, social,
                 params['social_dist_weight'], dir_memory,
                 pref_weighted, pref_inner,
-                pref_dist_w, pref_dist_sigma, best_mode)
+                pref_dist_w, pref_dist_sigma, best_mode,
+                params['boltzmann_beta'],
+                params['ignore_self_pref'])
             self.pos = new_pos
             self.prefs = new_prefs.astype(self._pref_dtype)
             self.dir_matrix = new_dm
@@ -641,6 +1059,7 @@ class Simulation:
         self._t_physics = time.perf_counter() - _tp0
         self._n_nbrs = nbr_ids.shape[1]
         self.step_count += 1
+
 
     def _step_numpy(self, pos, prefs, resp, dm, nbr_ids, valid,
                     has_mask, n_valid, arange_n,
@@ -691,7 +1110,33 @@ class Simulation:
                 else:
                     weighted_dir = weighted.mean(axis=1)
                 dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * weighted_dir
-                movement += resp[:, ki:ki+1] * dm[:, ki, :]
+                self_w = np.ones(n, dtype=resp.dtype) if params['ignore_self_pref'] else resp[:, ki]
+                movement += self_w[:, None] * dm[:, ki, :]
+
+            elif best_mode == 3:
+                # Boltzmann (corrected): direction and signal separated
+                beta = params['boltzmann_beta']
+                log_weights = beta * nbr_pref_k
+                if has_mask:
+                    log_weights = np.where(valid, log_weights, -np.inf)
+                log_weights -= log_weights.max(axis=1, keepdims=True)
+                weights = np.exp(log_weights)
+                w_sum = weights.sum(axis=1, keepdims=True)
+                w_sum = np.maximum(w_sum, 1e-30)
+                weights /= w_sum
+
+                # Pure direction average (no signal in direction)
+                avg_dir = (weights[:, :, None] * toward_unit).sum(axis=1)  # (N, 2)
+                # Weighted signal average
+                weighted_sig = (weights * nbr_pref_k).sum(axis=1)  # (N,)
+
+                dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * avg_dir
+                self_w = np.ones(n, dtype=resp.dtype) if params['ignore_self_pref'] else resp[:, ki]
+                compat = self_w * weighted_sig
+                if pref_inner:
+                    full_compat = (resp * prefs).sum(axis=1) / k
+                    compat = compat * full_compat
+                movement += compat[:, None] * dm[:, ki, :]
 
             else:
                 if best_mode == 2:
@@ -730,7 +1175,8 @@ class Simulation:
 
                 dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * unit_dir
 
-                compat = resp[:, ki] * prefs[best_nbr, ki]
+                self_w = np.ones(n, dtype=resp.dtype) if params['ignore_self_pref'] else resp[:, ki]
+                compat = self_w * prefs[best_nbr, ki]
                 if pref_inner:
                     full_compat = (resp * prefs[best_nbr]).sum(axis=1) / k
                     compat = compat * full_compat
@@ -1154,11 +1600,22 @@ class Simulation:
         return rgb
 
     def get_neighbor_lines(self):
-        """Generate line vertex pairs for neighbor edge visualization."""
-        if self.nbr_ids is None:
-            return np.zeros((0, 2), dtype=np.float32)
+        """Generate line vertex pairs for neighbor edge visualization.
+
+        For Delaunay mode, always shows 1-hop edges (the actual triangulation)
+        regardless of the hop parameter.
+        """
+        # Use 1-hop Delaunay edges for visualization if available
+        if params['neighbor_mode'] == 3 and self._delaunay_1hop_nbr_ids is not None:
+            nbr_ids = self._delaunay_1hop_nbr_ids
+            valid = self._delaunay_1hop_valid
+        else:
+            if self.nbr_ids is None:
+                return np.zeros((0, 2), dtype=np.float32)
+            nbr_ids = self.nbr_ids
+            valid = self._valid_mask
+
         pos = self.pos
-        nbr_ids = self.nbr_ids
         n, n_nbr = nbr_ids.shape
 
         starts = np.repeat(pos, n_nbr, axis=0)
@@ -1166,8 +1623,8 @@ class Simulation:
         delta = periodic_dist(starts, nbr_pos)
         ends = starts + delta
 
-        if self._valid_mask is not None:
-            mask = self._valid_mask.ravel()
+        if valid is not None:
+            mask = valid.ravel()
             starts = starts[mask]
             ends = ends[mask]
 

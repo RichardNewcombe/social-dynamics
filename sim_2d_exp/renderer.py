@@ -941,6 +941,37 @@ def run():
                 prog_line['line_color'] = (1.0, 1.0, 0.3, 0.4)
                 vao_line.render(moderngl.LINES, vertices=n_p * 2)
 
+        # EMA position lines
+        if params['pos_ema_enabled'] and params['pos_ema_show_lines']:
+            from .spatial import periodic_dist as _pdist
+            n_p = len(positions)
+            needed = n_p * 2 * 2 * 4
+            if needed > vbo_line.size:
+                vbo_line = ctx.buffer(reserve=needed)
+                vao_line = ctx.vertex_array(prog_line, [(vbo_line, '2f', 'in_pos')])
+
+            # Cyan: current pos → EMA pos (where it's been)
+            ema_pos = sim.pos_ema.astype(np.float32)
+            delta = _pdist(positions, ema_pos, SPACE)
+            ends = positions + delta
+            line_data = np.empty((n_p * 2, 2), dtype=np.float32)
+            line_data[0::2] = positions
+            line_data[1::2] = ends
+            vbo_line.write(line_data.tobytes())
+            prog_line['view_center'] = tuple(view_center)
+            prog_line['view_zoom'] = view_zoom
+            prog_line['line_color'] = (0.3, 1.0, 1.0, 0.3)
+            vao_line.render(moderngl.LINES, vertices=n_p * 2)
+
+            # Red: current pos → predicted pos (where it's going)
+            velocity = sim.pos_velocity.astype(np.float32)
+            pred_ends = positions + velocity
+            line_data[0::2] = positions
+            line_data[1::2] = pred_ends
+            vbo_line.write(line_data.tobytes())
+            prog_line['line_color'] = (1.0, 0.3, 0.3, 0.4)
+            vao_line.render(moderngl.LINES, vertices=n_p * 2)
+
         # Highlight tracked particles
         if sim.tracked.any():
             n_tracked = sim.tracked.sum()
@@ -985,22 +1016,49 @@ def run():
             grid_debug_tex.write(grid_rgb.tobytes())
 
         # Update memory field texture
-        if rv == 7 and sim.memory_field is not None:
+        if rv == 7:
+            # Use actual field size (may differ from grid_res until next step)
             G = sim.memory_field.shape[0]
             if G != memory_tex_size:
                 memory_tex = ctx.texture((G, G), 3, dtype='f2')
                 memory_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
                 memory_tex_size = G
-            # Map field to RGB: field values can be any range,
-            # normalize per-channel by max absolute value
-            field = sim.memory_field
-            k_vis = min(sim.k, 3)
             mem_rgb = np.zeros((G, G, 3), dtype=np.float16)
-            for d in range(k_vis):
-                ch = field[:, :, d]
-                ch_max = max(abs(ch.max()), abs(ch.min()), 1e-12)
-                # Map [-ch_max, ch_max] to [0, 1]
-                mem_rgb[:, :, d] = ((ch / ch_max + 1.0) * 0.5).astype(np.float16)
+            dep_mode = params['memory_deposit_mode']
+            if dep_mode == 0:
+                # Pref field: K dims as RGB
+                field = sim.memory_field
+                k_vis = min(sim.k, 3)
+                for d in range(k_vis):
+                    ch = field[:, :, d]
+                    ch_max = max(abs(ch.max()), abs(ch.min()), 1e-12)
+                    mem_rgb[:, :, d] = ((ch / ch_max + 1.0) * 0.5).astype(np.float16)
+            else:
+                # Flow field: show as HSV (hue=direction, value=magnitude)
+                flow = sim.memory_flow
+                angle = np.arctan2(flow[:, :, 1], flow[:, :, 0])
+                hue = ((angle / (2.0 * np.pi)) % 1.0).astype(np.float32)
+                mag = np.sqrt(flow[:, :, 0]**2 + flow[:, :, 1]**2)
+                mag_max = max(mag.max(), 1e-12)
+                val = (mag / mag_max).astype(np.float32)
+                # HSV to RGB (sat=1)
+                h6 = hue * 6.0
+                sector = h6.astype(np.int32) % 6
+                f = (h6 - np.floor(h6)).astype(np.float32)
+                q = val * (1.0 - f)
+                t = val * f
+                for si, (r, g, b) in enumerate([
+                    (val, t, np.zeros_like(val)),
+                    (q, val, np.zeros_like(val)),
+                    (np.zeros_like(val), val, t),
+                    (np.zeros_like(val), q, val),
+                    (t, np.zeros_like(val), val),
+                    (val, np.zeros_like(val), q),
+                ]):
+                    m = sector == si
+                    mem_rgb[m, 0] = r[m]
+                    mem_rgb[m, 1] = g[m]
+                    mem_rgb[m, 2] = b[m]
             memory_tex.write(mem_rgb.tobytes())
 
         right_tex = memory_tex if rv == 7 else \
@@ -1184,7 +1242,7 @@ def run():
                                      PREF_COLOR_MODES)
             if changed:
                 params['pref_color_mode'] = v
-        if params['right_view'] in (5, 6):
+        if params['right_view'] in (5, 6, 7):
             changed, v = imgui.drag_int("Grid Res##top", params['grid_res'], 1.0, 8, 256)
             if changed:
                 params['grid_res'] = v
@@ -1291,19 +1349,61 @@ def run():
             changed, v = imgui.combo("Best Neighbor", params['best_mode'], BEST_MODES)
             if changed:
                 params['best_mode'] = v
+            changed, v = imgui.checkbox("Ignore Self Pref", params['ignore_self_pref'])
+            if changed:
+                params['ignore_self_pref'] = v
+            if params['best_mode'] == 3:
+                changed, v = imgui.drag_float("Beta", params['boltzmann_beta'], 0.1, 0.0, 50.0, "%.2f")
+                if changed:
+                    params['boltzmann_beta'] = v
             changed, v = imgui.checkbox("Unit Prefs", params['unit_prefs'])
             if changed:
                 params['unit_prefs'] = v
+            imgui.separator()
+            imgui.text("Graph Diffusion")
+            changed, v = imgui.checkbox("Multi-Hop Diffusion", params['graph_diffusion'])
+            if changed:
+                params['graph_diffusion'] = v
+            if params['graph_diffusion']:
+                changed, v = imgui.drag_int("Hops", params['graph_diff_hops'], 0.5, 0, 10)
+                if changed:
+                    params['graph_diff_hops'] = v
+                changed, v = imgui.drag_float("Blend Alpha", params['graph_diff_alpha'], 0.01, 0.0, 1.0, "%.3f")
+                if changed:
+                    params['graph_diff_alpha'] = v
+            imgui.separator()
+            imgui.text("Position EMA")
+            changed, v = imgui.checkbox("Track Position EMA", params['pos_ema_enabled'])
+            if changed:
+                params['pos_ema_enabled'] = v
+            if params['pos_ema_enabled']:
+                changed, v = imgui.drag_float("EMA Decay", params['pos_ema_decay'], 0.005, 0.0, 0.999, "%.4f")
+                if changed:
+                    params['pos_ema_decay'] = v
+                _ema_modes = ["Normal", "Forward Predict", "Backward Lag"]
+                changed, v = imgui.combo("EMA Mode", params['pos_ema_mode'], _ema_modes)
+                if changed:
+                    params['pos_ema_mode'] = v
+                # Show velocity stats
+                vel_mag = np.linalg.norm(sim.pos_velocity, axis=1)
+                imgui.text(f"Vel: mean={vel_mag.mean():.4f} max={vel_mag.max():.4f}")
+                changed, v = imgui.checkbox("Show EMA Lines", params['pos_ema_show_lines'])
+                if changed:
+                    params['pos_ema_show_lines'] = v
             imgui.separator()
             imgui.text("Spatial Memory")
             changed, v = imgui.checkbox("Enable Memory Field", params['memory_field'])
             if changed:
                 params['memory_field'] = v
             if params['memory_field']:
+                _deposit_modes = ["Preferences", "Movement", "Compat Direction"]
+                changed, v = imgui.combo("Deposit", params['memory_deposit_mode'], _deposit_modes)
+                if changed:
+                    params['memory_deposit_mode'] = v
                 changed, v = imgui.drag_float("Write Rate", params['memory_write_rate'], 0.001, 0.0, 1.0, "%.4f")
                 if changed:
                     params['memory_write_rate'] = v
-                changed, v = imgui.drag_float("Field Strength", params['memory_strength'], 0.01, 0.0, 5.0, "%.3f")
+                changed, v = imgui.drag_float("Field Strength", params['memory_strength'], 0.001, -1.0, 1.0, "%.4f")
                 if changed:
                     params['memory_strength'] = v
                 changed, v = imgui.drag_float("Field Decay", params['memory_decay'], 0.001, 0.9, 1.0, "%.4f")
@@ -1317,8 +1417,15 @@ def run():
                     changed, v = imgui.drag_float("Sigma##mem", params['memory_blur_sigma'], 0.1, 0.1, 10.0, "%.1f")
                     if changed:
                         params['memory_blur_sigma'] = v
+                changed, v = imgui.drag_float("Divergence", params['memory_gradient_pull'], 0.001, -1.0, 1.0, "%.4f")
+                if changed:
+                    params['memory_gradient_pull'] = v
+                changed, v = imgui.drag_float("Grad Curl", params['memory_gradient_curl'], 0.001, -1.0, 1.0, "%.4f")
+                if changed:
+                    params['memory_gradient_curl'] = v
                 if imgui.button("Clear Field"):
                     sim.memory_field[:] = 0.0
+                    sim.memory_flow[:] = 0.0
             imgui.separator()
             imgui.text("Signal / Response")
             changed, v = imgui.checkbox("Split Signal+Response",
@@ -1351,10 +1458,14 @@ def run():
             changed, v = imgui.drag_float("Point Size", params['point_size'], 0.1, 1.0, 20.0, "%.1f")
             if changed:
                 params['point_size'] = v
-            _nbr_modes = ["KNN", "KNN + Radius", "Radius Only"]
+            _nbr_modes = ["KNN", "KNN + Radius", "Radius Only", "Delaunay"]
             changed, v = imgui.combo("Neighbor Mode", params['neighbor_mode'], _nbr_modes)
             if changed:
                 params['neighbor_mode'] = v
+            if params['neighbor_mode'] == 3:
+                changed, v = imgui.drag_int("Nbr Hops", params['delaunay_hops'], 0.5, 1, 5)
+                if changed:
+                    params['delaunay_hops'] = v
             # ── Engine ──
             _physics_engines = ["Numba", "NumPy (original)", "PyTorch",
                                 "Grid Field", "Grid Max CPU", "Grid Max GPU"]

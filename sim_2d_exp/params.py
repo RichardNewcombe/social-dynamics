@@ -10,7 +10,7 @@ SPACE = 1.0
 POS_DISTS = ["Uniform", "Gaussian"]
 PREF_DISTS = ["Uniform [-1,1]", "Gaussian", "Sparse ±1", "Unit Normalized",
               "Binary d0 + noise"]
-BEST_MODES = ["Default", "Max Magnitude", "Same-Sign Max Mag"]
+BEST_MODES = ["Default", "Max Magnitude", "Same-Sign Max Mag", "Boltzmann Softmax"]
 SOCIAL_MODES = ["Uniform", "Quiet-Dim Diff"]
 VIS_PREF_SOURCES = ["Signal", "Response"]
 PREF_COLOR_MODES = ["RGB", "Dim2 Heat", "HSV"]
@@ -34,8 +34,20 @@ params = dict(
     pref_inner_prod=False,
     inner_prod_avg=False,
     pref_dist_weight=False,
-    best_mode=0,            # 0=Default, 1=Max Magnitude, 2=Same-Sign Max Mag
-    neighbor_mode=0,
+    best_mode=0,            # 0=Default, 1=Max Magnitude, 2=Same-Sign, 3=Boltzmann
+    boltzmann_beta=5.0,     # temperature for Boltzmann softmax (0=mean, ∞=max)
+    ignore_self_pref=False, # set self-preference weight to 1 in compatibility
+    # ── Graph diffusion (multi-hop preference blending) ──
+    graph_diffusion=False,  # enable multi-hop preference diffusion
+    graph_diff_hops=2,      # number of diffusion hops (1-10)
+    graph_diff_alpha=0.3,   # blending per hop (0=self only, 1=pure neighbor avg)
+    # ── Position EMA (per-particle moving average) ──
+    pos_ema_enabled=False,  # enable position EMA tracking
+    pos_ema_decay=0.95,     # EMA decay (0=no memory, 1=permanent)
+    pos_ema_mode=0,         # 0=track only, 1=predict (linear), 2=use EMA pos for physics
+    pos_ema_show_lines=False, # draw lines from current pos to EMA pos
+    neighbor_mode=0,        # 0=KNN, 1=KNN+Radius, 2=Radius, 3=Delaunay
+    delaunay_hops=1,        # neighbor set expansion: 1=direct edges, 2=friends-of-friends, etc.
     neighbor_radius=0.06,
     trail_decay=0.98,
     point_size=3.0,
@@ -68,8 +80,11 @@ params = dict(
     memory_write_rate=0.01,  # how fast particles deposit into the field
     memory_strength=0.5,     # how strongly the field modulates preferences
     memory_decay=0.999,      # field decay per step (1.0 = permanent)
+    memory_deposit_mode=0,   # 0=preferences, 1=movement vector, 2=compat-weighted direction
     memory_blur=False,       # apply Gaussian blur to field each step
     memory_blur_sigma=1.0,   # blur sigma in grid cells
+    memory_gradient_pull=0.0, # strength of curl-free (convergent) force from field gradient
+    memory_gradient_curl=0.0, # strength of div-free (circulatory) force from perp gradient
     quantize_pos=False,  # snap positions to grid_res x grid_res grid
     truncate_pos_bits=False,  # truncate position mantissa to N bits
     pos_mantissa_bits=52,     # number of mantissa bits to keep (10-52)

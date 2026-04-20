@@ -34,7 +34,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
                L, k, step_size, repulsion, dir_memory,
                social, social_dist_weight,
                pref_weighted, pref_inner, inner_avg,
-               pref_dist_w, pref_dist_sigma, best_mode,
+               pref_dist_w, pref_dist_sigma, best_mode, boltzmann_beta=5.0, ignore_self_pref=False,
                torch_precision=2, torch_device_idx=0):
     """Full physics step using PyTorch vectorized ops.
 
@@ -159,7 +159,32 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
             else:
                 weighted_dir = weighted.mean(dim=1)
             dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * weighted_dir
-            movement = movement + resp[:, ki:ki+1] * dm[:, ki, :]
+            self_w = torch.ones(n, 1, dtype=resp.dtype, device=device) if ignore_self_pref else resp[:, ki:ki+1]
+            movement = movement + self_w * dm[:, ki, :]
+
+        elif best_mode == 3:
+            # Boltzmann (corrected): direction and signal separated
+            log_w = boltzmann_beta * nbr_pref_k
+            if has_mask:
+                log_w = torch.where(valid, log_w,
+                    torch.tensor(float('-inf'), dtype=log_w.dtype, device=device))
+            log_w = log_w - log_w.max(dim=1, keepdim=True).values
+            w = torch.exp(log_w)
+            w_sum = w.sum(dim=1, keepdim=True).clamp(min=1e-30)
+            w = w / w_sum
+
+            # Pure direction average (no signal in direction)
+            avg_dir = (w.unsqueeze(2) * toward_unit).sum(dim=1)  # (N, 2)
+            # Weighted signal average
+            weighted_sig = (w * nbr_pref_k).sum(dim=1)  # (N,)
+
+            dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * avg_dir
+            self_w = torch.ones(n, dtype=resp.dtype, device=device) if ignore_self_pref else resp[:, ki]
+            compat = self_w * weighted_sig
+            if pref_inner:
+                full_compat = (resp * prefs).sum(dim=1) / k
+                compat = compat * full_compat
+            movement = movement + compat.unsqueeze(1) * dm[:, ki, :]
 
         else:
             if best_mode == 2:
@@ -200,7 +225,8 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
 
             dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * unit_dir
 
-            compat = resp[:, ki] * prefs[best_nbr, ki]
+            self_w = torch.ones(n, dtype=resp.dtype, device=device) if ignore_self_pref else resp[:, ki]
+            compat = self_w * prefs[best_nbr, ki]
             if pref_inner:
                 full_compat = (resp * prefs[best_nbr]).sum(dim=1) / k
                 compat = compat * full_compat
