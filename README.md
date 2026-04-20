@@ -16,7 +16,7 @@ python3 -m sim_2d_exp
 ### Dependencies
 
 ```bash
-pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
+pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch triangle
 ```
 
 ## Controls
@@ -40,11 +40,29 @@ pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 - **Pref2D** — preference space scatter plot (dim0 vs dim1)
 - **Pref3D** — isometric projection of 3D preference space (120° axes)
 - **MaxGrid** — per-dimension max preference grid visualization
-- **Force** — force landscape (with variance toggle):
+- **Force** — force landscape with temporal variance toggle:
   - Max Pref (RGB) — strongest signal per dimension
   - Optimal Pref (RGB) — which preference vector maximizes force
   - Direction (HSV) — direction of maximum movement
-- **Memory** — spatial memory field visualization (RGB per dimension)
+- **Memory** — spatial memory field (RGB for preference deposit, HSV for flow deposit)
+
+## Neighbor Modes
+
+| Mode | Method | Description |
+|------|--------|-------------|
+| KNN | cKDTree / Hash Grid | Fixed number of nearest neighbors |
+| KNN + Radius | cKDTree | KNN filtered by distance |
+| Radius Only | Hash Grid | All neighbors within radius |
+| Delaunay | Triangle library | Planar triangulation, h-hop expansion via sparse adjacency matrix power |
+
+## Best Neighbor Selection
+
+| Mode | Behavior |
+|------|----------|
+| Default | Highest raw preference value per dimension |
+| Max Magnitude | Highest absolute preference value |
+| Same-Sign Max Mag | Highest magnitude among same-sign neighbors |
+| Boltzmann Softmax | Soft selection with temperature β (β=0: mean, β→∞: argmax) |
 
 ## Physics Engines
 
@@ -59,18 +77,46 @@ pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch
 
 ## Key Features
 
+### Interaction Models
 - **Signal/Response split** — separate broadcast identity from reaction weights
+- **Boltzmann softmax** — continuous temperature control between cooperative (averaged) and competitive (winner-take-all) dynamics
+- **Ignore Self Pref** — remove self-preference weighting from compatibility
+- **Inner product weighting** — full preference vector alignment modulates force
+
+### Preference Evolution
 - **Social learning** — positive (conformity) or negative (differentiation)
 - **Quiet-dim differentiation** — differentiate along dynamically inactive dimensions
-- **Spatial memory field** — persistent grid that modulates preferences based on interaction history ([writeup](docs/spatial_memory.pdf))
-- **Force landscape** — visualize the force field across space with temporal variance
-- **Shadow simulation** — run a perturbed copy to measure chaotic sensitivity
-- **Precision controls** — position/preference dtype (f16/f32/f64), mantissa bit truncation, discrete quantization
+- **Graph diffusion** — multi-hop preference blending over the neighbor graph (hops + alpha controls)
+
+### Spatial Memory Field
+- **Deposit modes**: raw preferences, movement vectors, or normalized compat direction
+- **Read**: multiplicative preference modulation (field strength)
+- **Gradient forces**: Divergence (convergent) + Curl (circulatory) from field gradients
+- **Flow following**: direct flow-following force for movement/compat deposits
+- **Diffusion**: Gaussian blur for spatial spreading
+- **Decay**: exponential forgetting
+- See [spatial memory writeup](docs/spatial_memory.pdf) for analysis
+
+### Position EMA
+- Per-particle exponential moving average of position
+- Three modes: Normal (track only), Forward Predict, Backward Lag
+- Velocity visualization (cyan=history, red=prediction lines)
+
+### Delaunay Triangulation
+- Periodic boundary handling via boundary-only particle replication
+- Fast triangulation using Shewchuk's Triangle library (~4x faster than scipy)
+- h-hop neighbor expansion via sparse adjacency matrix power (A + A² + ... + Aʰ)
+- Visualization shows true planar triangulation edges
+
+### Analysis Tools
+- **Force landscape** — probe-based visualization of force magnitude and optimal preference at each point in space
+- **Shadow simulation** — run a perturbed copy to track chaotic divergence with LSB perturbation
+- **Precision controls** — position/preference dtype (f16/f32/f64), mantissa bit truncation, discrete level quantization
 
 ## Documentation
 
-- **[Simulator Overview (PDF)](docs/simulator_overview.pdf)** — comprehensive mathematical description of all models: core dynamics with worked example, best neighbor modes, signal/response split, social learning, spatial memory, grid field approximations, force landscape, shadow simulation, and precision controls
-- **[Spatial Memory Field (PDF)](docs/spatial_memory.pdf)** — detailed analysis of the memory field mechanism, parameter regimes, fixed points, and diffusion length
+- **[Simulator Overview (PDF)](docs/simulator_overview.pdf)** — comprehensive mathematical description of all models
+- **[Spatial Memory Field (PDF)](docs/spatial_memory.pdf)** — detailed analysis of the memory field mechanism
 
 ## Modules
 
