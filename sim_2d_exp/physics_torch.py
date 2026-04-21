@@ -34,7 +34,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
                L, k, step_size, repulsion, dir_memory,
                social, social_dist_weight,
                pref_weighted, pref_inner, inner_avg,
-               pref_dist_w, pref_dist_sigma, best_mode, boltzmann_beta=5.0, ignore_self_pref=False,
+               pref_dist_w, pref_dist_sigma, best_mode, boltzmann_beta=5.0, ignore_self_pref=False, normalize_direction=True,
                torch_precision=2, torch_device_idx=0):
     """Full physics step using PyTorch vectorized ops.
 
@@ -88,7 +88,10 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
     nbr_pos = pos[nbr_ids]
     toward = _torch_periodic_dist(pos.unsqueeze(1), nbr_pos, L)
     dists = toward.norm(dim=2, keepdim=True).clamp(min=1e-12)
-    toward_unit = toward / dists
+    if normalize_direction:
+        toward_unit = toward / dists
+    else:
+        toward_unit = toward
 
     movement = torch.zeros(n, 2, dtype=dtype, device=device)
 
@@ -216,7 +219,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
 
             disp = _torch_periodic_dist(pos, pos[best_nbr], L)
             dist = disp.norm(dim=1, keepdim=True).clamp(min=1e-12)
-            unit_dir = disp / dist
+            unit_dir = disp / dist if normalize_direction else disp
 
             if any_valid is not None:
                 # Zero out unit_dir for particles with no valid same-sign neighbor

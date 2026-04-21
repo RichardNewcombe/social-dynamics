@@ -131,7 +131,8 @@ def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                   step_size, repulsion, social, social_dist_weight,
                   dir_memory, pref_weighted, pref_inner,
                   pref_dist_weight, pref_dist_sigma, best_mode,
-                  boltzmann_beta=5.0, ignore_self_pref=False):
+                  boltzmann_beta=5.0, ignore_self_pref=False,
+                  normalize_direction=True):
     """Per-dimension physics step.
 
     Neighbor selection uses prefs (signal).
@@ -169,8 +170,12 @@ def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                     wc += 1
                     if dist < 1e-12:
                         continue
-                    ux = dx / dist
-                    uy = dy / dist
+                    if normalize_direction:
+                        ux = dx / dist
+                        uy = dy / dist
+                    else:
+                        ux = dx
+                        uy = dy
                     w = prefs[nj, ki]  # neighbor signal
                     if pref_dist_weight:
                         gw = np.exp(-dist * dist / (2.0 * pref_dist_sigma * pref_dist_sigma))
@@ -229,8 +234,12 @@ def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                     dy -= L * round(dy / L)
                     dist = (dx * dx + dy * dy) ** 0.5
                     if dist > 1e-12:
-                        dx_sum += w * dx / dist
-                        dy_sum += w * dy / dist
+                        if normalize_direction:
+                            dx_sum += w * dx / dist
+                            dy_sum += w * dy / dist
+                        else:
+                            dx_sum += w * dx
+                            dy_sum += w * dy
                 if w_sum > 1e-30:
                     dx_sum /= w_sum
                     dy_sum /= w_sum
@@ -279,9 +288,12 @@ def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                 dist = (dx * dx + dy * dy) ** 0.5
                 if dist < 1e-12:
                     ux, uy = 0.0, 0.0
-                else:
+                elif normalize_direction:
                     ux = dx / dist
                     uy = dy / dist
+                else:
+                    ux = dx
+                    uy = dy
                 new_dm[i, ki, 0] = dir_memory * dir_matrix[i, ki, 0] + (1.0 - dir_memory) * ux
                 new_dm[i, ki, 1] = dir_memory * dir_matrix[i, ki, 1] + (1.0 - dir_memory) * uy
                 # Compatibility: response[i] * signal[j*]

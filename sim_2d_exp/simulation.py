@@ -95,10 +95,15 @@ class Simulation:
         self.memory_field = np.zeros((G, G, k), dtype=np.float64)  # pref deposit
         self.memory_flow = np.zeros((G, G, 2), dtype=np.float64)   # movement/compat deposit
 
-        # Per-particle position EMA
+        # Per-particle position history (EMA or delay buffer)
         pos_dtype = np.float64 if params['use_f64'] else np.float32
         self.pos_ema = self.pos.copy()
-        self.pos_velocity = np.zeros((n, 2), dtype=pos_dtype)  # current - ema
+        self.pos_velocity = np.zeros((n, 2), dtype=pos_dtype)
+        # Delay buffer: ring buffer of past positions
+        max_delay = max(1, params.get('pos_delay_steps', 1))
+        self._pos_delay_buf = np.tile(self.pos, (max_delay + 1, 1, 1))  # (D+1, N, 2)
+        self._pos_delay_idx = 0  # current write index
+        self.pos_history = self.pos.copy()  # the "historical" position (EMA or delayed)
 
     # ── Initialisation helpers ──────────────────────────────────────
 
@@ -517,19 +522,18 @@ class Simulation:
 
     def step(self, reuse_neighbors=False):
         """Run one simulation step (neighbor find + physics + post-processing)."""
-        # ── Position EMA: optionally modify position for physics ──
+        # ── Position history: optionally modify position for physics ──
         pos_real = None
-        ema_mode = params['pos_ema_mode'] if params['pos_ema_enabled'] else 0
-        if ema_mode == 1:
-            # Predict: run physics from linearly extrapolated position
+        hist_mode = params['pos_history_mode'] if params['pos_history_enabled'] else 0
+        if hist_mode == 1:
+            # Forward Predict: run physics from extrapolated position
             pos_real = self.pos.copy()
-            velocity = self.pos - self.pos_ema
-            velocity -= SPACE * np.round(velocity / SPACE)
+            velocity = self.pos_velocity
             self.pos = (self.pos + velocity) % SPACE
-        elif ema_mode == 2:
-            # EMA: run physics from the smoothed historical position
+        elif hist_mode == 2:
+            # Backward Lag: run physics from historical position
             pos_real = self.pos.copy()
-            self.pos = self.pos_ema.copy()
+            self.pos = self.pos_history.copy()
 
         # ── Memory field: read (modulate preferences before physics) ──
         prefs_backup = None
@@ -573,6 +577,19 @@ class Simulation:
             modulated_prefs_pre = self.prefs.copy()
             if params['use_signal_response']:
                 modulated_resp_pre = self.response.copy()
+
+        # ── Preference power: raise |pref| to power, preserve sign ──
+        prefs_pre_power = None
+        resp_pre_power = None
+        power = params['pref_power']
+        if power != 1.0:
+            prefs_pre_power = self.prefs.copy()
+            p = self.prefs.astype(np.float64)
+            self.prefs = (np.sign(p) * np.abs(p) ** power).clip(-1, 1).astype(self._pref_dtype)
+            if params['use_signal_response']:
+                resp_pre_power = self.response.copy()
+                r = self.response.astype(np.float64)
+                self.response = (np.sign(r) * np.abs(r) ** power).clip(-1, 1).astype(self._pref_dtype)
 
         # ── Graph diffusion: multi-hop preference blending ──
         prefs_pre_diff = None
@@ -626,6 +643,12 @@ class Simulation:
             self.prefs = prefs_pre_diff
             if resp_pre_diff is not None:
                 self.response = resp_pre_diff
+
+        # ── Preference power: restore original prefs ──
+        if prefs_pre_power is not None:
+            self.prefs = prefs_pre_power
+            if resp_pre_power is not None:
+                self.response = resp_pre_power
 
         # ── Memory field: capture social delta, restore, write, decay ──
         if params['memory_field'] and prefs_backup is not None:
@@ -784,31 +807,89 @@ class Simulation:
         elif mode == 1:
             self.update_tracked_with_neighbors()
 
-        # ── Position EMA: restore real position and update EMA ──
-        if params['pos_ema_enabled']:
+        # ── Position history: restore real position and update history ──
+        if params['pos_history_enabled']:
             if pos_real is not None:
-                # Physics ran from a modified position (predicted or EMA).
-                # Extract the movement delta and apply to real position.
-                if ema_mode == 1:
-                    # Predicted input was: pos_real + velocity
-                    predicted = pos_real + (pos_real - self.pos_ema)
+                # Physics ran from a modified position. Extract movement delta.
+                if hist_mode == 1:
+                    predicted = pos_real + self.pos_velocity
                     predicted -= SPACE * np.round((predicted - pos_real) / SPACE)
                 else:
-                    # EMA input was: pos_ema
-                    predicted = self.pos_ema
+                    predicted = self.pos_history
                 delta = self.pos - predicted
                 delta -= SPACE * np.round(delta / SPACE)
                 self.pos = (pos_real + delta) % SPACE
 
-            # Update EMA with periodic-aware averaging
-            decay = params['pos_ema_decay']
-            diff = self.pos - self.pos_ema
-            diff -= SPACE * np.round(diff / SPACE)  # shortest periodic path
-            self.pos_ema = (self.pos_ema + (1.0 - decay) * diff) % SPACE
+            hist_type = params['pos_history_type']
+            if hist_type == 0:
+                # EMA: exponential moving average
+                decay = params['pos_ema_decay']
+                diff = self.pos - self.pos_ema
+                diff -= SPACE * np.round(diff / SPACE)
+                self.pos_ema = (self.pos_ema + (1.0 - decay) * diff) % SPACE
+                self.pos_history = self.pos_ema.copy()
+            else:
+                # Delay buffer: exact position from N steps ago
+                delay = max(0, params['pos_delay_steps'])
+                buf = self._pos_delay_buf
+                # Resize buffer if delay changed
+                if delay >= buf.shape[0]:
+                    new_buf = np.tile(self.pos, (delay + 1, 1, 1))
+                    old_len = buf.shape[0]
+                    new_buf[:old_len] = buf
+                    self._pos_delay_buf = new_buf
+                    buf = self._pos_delay_buf
+                # Write current position into buffer
+                self._pos_delay_idx = (self._pos_delay_idx + 1) % buf.shape[0]
+                buf[self._pos_delay_idx] = self.pos
+                # Read position from N steps ago
+                read_idx = (self._pos_delay_idx - delay) % buf.shape[0]
+                self.pos_history = buf[read_idx].copy()
+                self.pos_ema = self.pos_history  # keep ema in sync for viz
 
-            # Velocity estimate (smoothed by EMA)
-            self.pos_velocity = self.pos - self.pos_ema
+            # Velocity: current - historical position
+            self.pos_velocity = self.pos - self.pos_history
             self.pos_velocity -= SPACE * np.round(self.pos_velocity / SPACE)
+
+        # ── Velocity alignment force ──
+        vel_align = params['vel_align_strength']
+        if vel_align != 0.0 and params['pos_history_enabled'] and self.nbr_ids is not None:
+            nbr_ids = self.nbr_ids
+            valid = self._valid_mask
+            n = self.n
+            vel = self.pos_velocity  # (N, 2)
+            vel_mag = np.linalg.norm(vel, axis=1, keepdims=True)
+            vel_mag = np.maximum(vel_mag, 1e-12)
+            vel_unit = vel / vel_mag  # (N, 2) unit velocity
+
+            # For each particle, compute alignment with each neighbor's velocity
+            nbr_vel = vel[nbr_ids]  # (N, K_nbr, 2)
+            nbr_vel_mag = np.linalg.norm(nbr_vel, axis=2, keepdims=True)
+            nbr_vel_mag = np.maximum(nbr_vel_mag, 1e-12)
+            nbr_vel_unit = nbr_vel / nbr_vel_mag  # (N, K_nbr, 2)
+
+            # Alignment: dot product of unit velocities
+            alignment = (vel_unit[:, None, :] * nbr_vel_unit).sum(axis=2)  # (N, K_nbr)
+
+            # Direction toward each neighbor (periodic)
+            from .spatial import periodic_dist
+            nbr_pos = self.pos[nbr_ids]  # (N, K_nbr, 2)
+            toward = periodic_dist(self.pos[:, None, :], nbr_pos)  # (N, K_nbr, 2)
+            dist = np.linalg.norm(toward, axis=2, keepdims=True)
+            toward_unit = toward / np.maximum(dist, 1e-12)
+
+            # Force: alignment-weighted direction toward neighbor
+            force = alignment[:, :, None] * toward_unit  # (N, K_nbr, 2)
+            if valid is not None:
+                force = force * valid[:, :, None]
+                n_valid = valid.sum(axis=1, keepdims=True).clip(1)
+                force = force.sum(axis=1) / n_valid
+            else:
+                force = force.mean(axis=1)
+
+            step_size = params['step_size']
+            self.pos = (self.pos + vel_align * step_size * force) % SPACE
+            self._movement += vel_align * force
 
         # ── Recompute Delaunay visualization from post-step positions ──
         if params['neighbor_mode'] == 3 and params['show_neighbors']:
@@ -1010,6 +1091,7 @@ class Simulation:
                 pref_dist_w, pref_dist_sigma, best_mode,
                 boltzmann_beta=params['boltzmann_beta'],
                 ignore_self_pref=params['ignore_self_pref'],
+                normalize_direction=params['normalize_direction'],
                 torch_precision=params['torch_precision'],
                 torch_device_idx=params['torch_device'])
             self.pos = new_pos.astype(pos.dtype)
@@ -1050,7 +1132,8 @@ class Simulation:
                 pref_weighted, pref_inner,
                 pref_dist_w, pref_dist_sigma, best_mode,
                 params['boltzmann_beta'],
-                params['ignore_self_pref'])
+                params['ignore_self_pref'],
+                params['normalize_direction'])
             self.pos = new_pos
             self.prefs = new_prefs.astype(self._pref_dtype)
             self.dir_matrix = new_dm
@@ -1073,7 +1156,10 @@ class Simulation:
         nbr_pos = pos[nbr_ids]
         toward = periodic_dist(pos[:, None, :], nbr_pos)
         dists = np.linalg.norm(toward, axis=2, keepdims=True)
-        toward_unit = toward / np.maximum(dists, 1e-12)
+        if params['normalize_direction']:
+            toward_unit = toward / np.maximum(dists, 1e-12)
+        else:
+            toward_unit = toward.copy()
 
         if inner_avg:
             if valid is None:
@@ -1166,7 +1252,10 @@ class Simulation:
 
                 disp = periodic_dist(pos, pos[best_nbr])
                 dist = np.linalg.norm(disp, axis=1, keepdims=True)
-                unit_dir = disp / np.maximum(dist, 1e-12)
+                if params['normalize_direction']:
+                    unit_dir = disp / np.maximum(dist, 1e-12)
+                else:
+                    unit_dir = disp
 
                 if any_valid is not None:
                     # Zero out for particles with no same-sign neighbor

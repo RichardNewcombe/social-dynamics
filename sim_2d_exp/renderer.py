@@ -463,7 +463,7 @@ def run():
         nonlocal running_sim, shadow_sim, shadow_divergence
         if params['auto_scale']:
             ref = auto_scale_ref
-            scale = (ref['n'] / params['num_particles']) ** 0.5
+            scale = (ref['n'] / max(params['num_particles'], 1)) ** 0.5
             params['step_size'] = ref['step_size'] * scale
             params['neighbor_radius'] = ref['radius'] * scale
         # Main sim: always unperturbed
@@ -941,8 +941,8 @@ def run():
                 prog_line['line_color'] = (1.0, 1.0, 0.3, 0.4)
                 vao_line.render(moderngl.LINES, vertices=n_p * 2)
 
-        # EMA position lines
-        if params['pos_ema_enabled'] and params['pos_ema_show_lines']:
+        # History position lines
+        if params['pos_history_enabled'] and params['pos_ema_show_lines']:
             from .spatial import periodic_dist as _pdist
             n_p = len(positions)
             needed = n_p * 2 * 2 * 4
@@ -950,8 +950,8 @@ def run():
                 vbo_line = ctx.buffer(reserve=needed)
                 vao_line = ctx.vertex_array(prog_line, [(vbo_line, '2f', 'in_pos')])
 
-            # Cyan: current pos → EMA pos (where it's been)
-            ema_pos = sim.pos_ema.astype(np.float32)
+            # Cyan: current pos → historical pos (where it's been)
+            ema_pos = sim.pos_history.astype(np.float32)
             delta = _pdist(positions, ema_pos, SPACE)
             ends = positions + delta
             line_data = np.empty((n_p * 2, 2), dtype=np.float32)
@@ -1349,6 +1349,13 @@ def run():
             changed, v = imgui.combo("Best Neighbor", params['best_mode'], BEST_MODES)
             if changed:
                 params['best_mode'] = v
+            changed, v = imgui.drag_float("Pref Power", params['pref_power'], 0.05, 0.0, 10.0, "%.2f")
+            if changed:
+                params['pref_power'] = v
+            changed, v = imgui.checkbox("Normalize Dir", params['normalize_direction'])
+            if changed:
+                params['normalize_direction'] = v
+            imgui.same_line()
             changed, v = imgui.checkbox("Ignore Self Pref", params['ignore_self_pref'])
             if changed:
                 params['ignore_self_pref'] = v
@@ -1372,24 +1379,35 @@ def run():
                 if changed:
                     params['graph_diff_alpha'] = v
             imgui.separator()
-            imgui.text("Position EMA")
-            changed, v = imgui.checkbox("Track Position EMA", params['pos_ema_enabled'])
+            imgui.text("Particle History & Prediction")
+            changed, v = imgui.checkbox("Enable History", params['pos_history_enabled'])
             if changed:
-                params['pos_ema_enabled'] = v
-            if params['pos_ema_enabled']:
-                changed, v = imgui.drag_float("EMA Decay", params['pos_ema_decay'], 0.005, 0.0, 0.999, "%.4f")
+                params['pos_history_enabled'] = v
+            if params['pos_history_enabled']:
+                _hist_types = ["EMA (exponential)", "Delay (exact N-step)"]
+                changed, v = imgui.combo("History Type", params['pos_history_type'], _hist_types)
                 if changed:
-                    params['pos_ema_decay'] = v
-                _ema_modes = ["Normal", "Forward Predict", "Backward Lag"]
-                changed, v = imgui.combo("EMA Mode", params['pos_ema_mode'], _ema_modes)
+                    params['pos_history_type'] = v
+                if params['pos_history_type'] == 0:
+                    changed, v = imgui.drag_float("EMA Decay", params['pos_ema_decay'], 0.005, 0.0, 0.999, "%.4f")
+                    if changed:
+                        params['pos_ema_decay'] = v
+                else:
+                    changed, v = imgui.drag_int("Delay Steps", params['pos_delay_steps'], 0.5, 0, 100)
+                    if changed:
+                        params['pos_delay_steps'] = v
+                _hist_modes = ["Normal", "Forward Predict", "Backward Lag"]
+                changed, v = imgui.combo("Physics Mode", params['pos_history_mode'], _hist_modes)
                 if changed:
-                    params['pos_ema_mode'] = v
-                # Show velocity stats
+                    params['pos_history_mode'] = v
                 vel_mag = np.linalg.norm(sim.pos_velocity, axis=1)
                 imgui.text(f"Vel: mean={vel_mag.mean():.4f} max={vel_mag.max():.4f}")
-                changed, v = imgui.checkbox("Show EMA Lines", params['pos_ema_show_lines'])
+                changed, v = imgui.checkbox("Show History Lines", params['pos_ema_show_lines'])
                 if changed:
                     params['pos_ema_show_lines'] = v
+                changed, v = imgui.drag_float("Vel Alignment", params['vel_align_strength'], 0.01, -1.0, 1.0, "%.3f")
+                if changed:
+                    params['vel_align_strength'] = v
             imgui.separator()
             imgui.text("Spatial Memory")
             changed, v = imgui.checkbox("Enable Memory Field", params['memory_field'])
@@ -1610,7 +1628,7 @@ def run():
                 params['auto_scale'] = v
             if params['auto_scale']:
                 ref = auto_scale_ref
-                scale = (ref['n'] / params['num_particles']) ** 0.5
+                scale = (ref['n'] / max(params['num_particles'], 1)) ** 0.5
                 imgui.text_colored(
                     imgui.ImVec4(0.6, 0.9, 0.6, 1.0),
                     f"  step={ref['step_size']*scale:.4f}  "

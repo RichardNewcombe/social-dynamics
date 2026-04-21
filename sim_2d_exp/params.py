@@ -37,14 +37,19 @@ params = dict(
     best_mode=0,            # 0=Default, 1=Max Magnitude, 2=Same-Sign, 3=Boltzmann
     boltzmann_beta=5.0,     # temperature for Boltzmann softmax (0=mean, ∞=max)
     ignore_self_pref=False, # set self-preference weight to 1 in compatibility
+    pref_power=1.0,         # raise |pref| to this power (1=linear, >1=sharpen, <1=flatten, 0=sign only)
+    normalize_direction=True, # normalize direction to best neighbor (True=unit vector, False=raw displacement)
     # ── Graph diffusion (multi-hop preference blending) ──
     graph_diffusion=False,  # enable multi-hop preference diffusion
     graph_diff_hops=2,      # number of diffusion hops (1-10)
     graph_diff_alpha=0.3,   # blending per hop (0=self only, 1=pure neighbor avg)
-    # ── Position EMA (per-particle moving average) ──
-    pos_ema_enabled=False,  # enable position EMA tracking
+    # ── Particle History & Prediction ──
+    pos_history_enabled=False,  # enable position history tracking
+    pos_history_type=0,     # 0=EMA (exponential), 1=delay (exact N-step-ago position)
     pos_ema_decay=0.95,     # EMA decay (0=no memory, 1=permanent)
-    pos_ema_mode=0,         # 0=track only, 1=predict (linear), 2=use EMA pos for physics
+    pos_delay_steps=1,      # delay buffer: 0=current, 1=previous step, N=N steps ago
+    pos_history_mode=0,     # 0=Normal, 1=Forward Predict, 2=Backward Lag
+    vel_align_strength=0.0, # velocity alignment force between neighbors
     pos_ema_show_lines=False, # draw lines from current pos to EMA pos
     neighbor_mode=0,        # 0=KNN, 1=KNN+Radius, 2=Radius, 3=Delaunay
     delaunay_hops=1,        # neighbor set expansion: 1=direct edges, 2=friends-of-friends, etc.
