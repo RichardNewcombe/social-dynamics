@@ -19,7 +19,64 @@ Does NOT require: glfw, imgui, PyOpenGL, a display server
 import argparse
 import json
 import time
+import platform
 import numpy as np
+
+
+_ENGINE_NAMES = {0: 'Numba', 1: 'NumPy', 2: 'PyTorch', 3: 'Grid Field', 4: 'Grid Max Field GPU'}
+_KNN_NAMES = {0: 'Hash Grid', 1: 'cKDTree (f64)', 2: 'cKDTree (f32)'}
+_NEIGHBOR_NAMES = {0: 'KNN', 1: 'KNN+Radius', 2: 'Radius', 3: 'Delaunay'}
+_TORCH_PREC_NAMES = {0: 'f16', 1: 'bf16', 2: 'f32', 3: 'f64'}
+_PREF_PREC_NAMES = {0: 'f16', 1: 'f32', 2: 'f64'}
+
+
+def _print_startup_info(params, N, K, n_steps, W, H):
+    eng = params['physics_engine']
+    print("=" * 70)
+    print(f"Headless run: N={N}, K={K}, steps={n_steps}, size={W}x{H}")
+    print(f"Engine:        {eng} ({_ENGINE_NAMES.get(eng, '?')})")
+    print(f"step_size:     {params['step_size']}")
+    print(f"KNN method:    {params['knn_method']} ({_KNN_NAMES.get(params['knn_method'], '?')})")
+    print(f"Neighbor mode: {params['neighbor_mode']} ({_NEIGHBOR_NAMES.get(params['neighbor_mode'], '?')})  n_neighbors={params['n_neighbors']}")
+    print(f"Position dtype: {'f64' if params['use_f64'] else 'f32'}")
+    print(f"Pref precision: {params['pref_precision']} ({_PREF_PREC_NAMES.get(params['pref_precision'], '?')})")
+
+    # Engine-specific
+    if eng == 2:  # PyTorch
+        from .physics_torch import _HAS_TORCH, _TORCH_DEVICE
+        dev_idx = params['torch_device']
+        prec_idx = params['torch_precision']
+        sel_dev = 'cpu' if dev_idx == 1 else _TORCH_DEVICE
+        print(f"PyTorch:       available={_HAS_TORCH}  auto_device={_TORCH_DEVICE}  selected={sel_dev}")
+        print(f"Torch dtype:   {prec_idx} ({_TORCH_PREC_NAMES.get(prec_idx, '?')})")
+        try:
+            import torch
+            print(f"Torch version: {torch.__version__}")
+            print(f"CUDA avail:    {torch.cuda.is_available()}", end='')
+            if torch.cuda.is_available():
+                print(f"  ({torch.cuda.device_count()}x {torch.cuda.get_device_name(0)})")
+            else:
+                print()
+            mps_avail = getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available()
+            print(f"MPS avail:     {bool(mps_avail)}")
+        except Exception as e:
+            print(f"Torch import failed: {e}")
+    elif eng in (0,):  # Numba
+        try:
+            import numba
+            print(f"Numba version: {numba.__version__}  threads={numba.get_num_threads()}")
+        except Exception as e:
+            print(f"Numba import failed: {e}")
+    elif eng == 4:  # Grid GPU
+        try:
+            import torch
+            print(f"Torch CUDA: {torch.cuda.is_available()}  MPS: {torch.backends.mps.is_available()}")
+        except Exception:
+            pass
+
+    print(f"NumPy:         {np.__version__}")
+    print(f"Python:        {platform.python_version()}  on {platform.machine()}")
+    print("=" * 70)
 
 
 def run_headless(args):
@@ -45,11 +102,14 @@ def run_headless(args):
     W, H = args.width, args.height
     half_w = W // 2
 
-    print(f"Headless run: N={N}, K={K}, steps={n_steps}, size={W}x{H}")
-    print(f"Engine: {params['physics_engine']}, step_size={params['step_size']}")
+    _print_startup_info(params, N, K, n_steps, W, H)
 
     # ── Create standalone OpenGL context (no display) ──
-    ctx = moderngl.create_standalone_context(require=330)
+    # EGL backend is required on display-less systems; X11 backend needs $DISPLAY.
+    try:
+        ctx = moderngl.create_standalone_context(require=330, backend='egl')
+    except Exception:
+        ctx = moderngl.create_standalone_context(require=330)
     ctx.enable(moderngl.PROGRAM_POINT_SIZE)
     ctx.enable(moderngl.BLEND)
     ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE

@@ -9,6 +9,13 @@ build/
 .DS_Store
 imgui.ini
 
+# Local-only environment / artifacts
+venv/
+.gl_libs/
+.claude/
+sim_output.png
+default.profraw
+
 # Legacy files (preserved in archive-all branch)
 sim_gpu*.py
 sim_2d/

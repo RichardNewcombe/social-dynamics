@@ -10,7 +10,12 @@ import numpy as np
 try:
     import torch
     _HAS_TORCH = True
-    _TORCH_DEVICE = 'mps' if torch.backends.mps.is_available() else 'cpu'
+    if torch.cuda.is_available():
+        _TORCH_DEVICE = 'cuda'
+    elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        _TORCH_DEVICE = 'mps'
+    else:
+        _TORCH_DEVICE = 'cpu'
 except ImportError:
     _HAS_TORCH = False
     _TORCH_DEVICE = 'cpu'
