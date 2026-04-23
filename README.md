@@ -4,19 +4,55 @@ Preference-directed particle simulation exploring emergent complex dynamics from
 
 ![Example Society](ExampleSociety.png)
 
+## Setup
+
+### Virtual environment
+
+```bash
+python3 -m venv venv
+source venv/bin/activate    # Linux/macOS
+# venv\Scripts\activate     # Windows
+```
+
+### Install dependencies
+
+```bash
+# Core (required for all modes)
+pip install numpy numba scipy moderngl
+
+# Interactive GUI (for windowed mode)
+pip install glfw imgui-bundle PyOpenGL
+
+# GPU acceleration
+pip install torch                # MPS on Apple Silicon, CUDA on NVIDIA
+
+# Optional (faster Delaunay, image output)
+pip install triangle Pillow
+
+# All at once:
+pip install numpy numba scipy moderngl glfw imgui-bundle PyOpenGL torch triangle Pillow
+```
+
+**Note for CUDA**: Install PyTorch with CUDA support from [pytorch.org](https://pytorch.org/get-started/locally/) instead of the default `pip install torch`.
+
 ## Quick Start
 
 Requires a terminal with GPU access. On macOS, if you see "Software Renderer" warnings, try Terminal.app instead of VS Code's integrated terminal.
 
 ```bash
 cd gpu
-python3 -m sim_2d_exp
+python3 -m sim_2d_exp           # interactive GUI
+python3 -m sim_2d_exp.headless  # headless (no display needed)
 ```
 
-### Dependencies
+### Headless mode (servers / clusters)
+
+No display, GLFW, or imgui needed — only requires numpy, scipy, numba, moderngl, and optionally torch + Pillow.
 
 ```bash
-pip install numpy numba scipy glfw moderngl imgui-bundle PyOpenGL torch triangle
+python3 -m sim_2d_exp.headless --steps 500 --particles 2000 --output result.png
+python3 -m sim_2d_exp.headless --steps 1000 --config '{"social": -0.003, "memory_field": true}'
+python3 -m sim_2d_exp.headless --steps 500 --save-data  # also saves .npz with raw arrays
 ```
 
 ## Controls
