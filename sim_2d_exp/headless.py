@@ -88,13 +88,13 @@ def run_headless(args):
     )
     from .simulation import Simulation
 
-    # Apply config overrides
+    # Apply --config JSON first, then individual --<param> overrides
     if args.config:
         params.update(json.loads(args.config))
-    if args.particles is not None:
-        params['num_particles'] = args.particles
-    if args.k is not None:
-        params['k'] = args.k
+    for key in params.keys():
+        v = getattr(args, key, None)
+        if v is not None:
+            params[key] = v
 
     n_steps = args.steps
     N = params['num_particles']
@@ -269,14 +269,47 @@ def run_headless(args):
         print(f"Data saved to {data_path}")
 
 
+def _str2bool(v):
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ('true', 't', 'yes', 'y', '1'):
+        return True
+    if s in ('false', 'f', 'no', 'n', '0'):
+        return False
+    raise argparse.ArgumentTypeError(f"expected bool, got {v!r}")
+
+
+def _add_param_args(parser):
+    """Add one CLI flag per key in params dict, inferring type from default."""
+    from .params import params
+    group = parser.add_argument_group(
+        'simulation params',
+        'Any key in params.py is exposed as --<key>; default shown in [brackets]. '
+        'These override --config JSON.')
+    for key, default in params.items():
+        if isinstance(default, bool):
+            t = _str2bool
+            metavar = 'BOOL'
+        elif isinstance(default, int):
+            t = int
+            metavar = 'INT'
+        elif isinstance(default, float):
+            t = float
+            metavar = 'FLOAT'
+        else:
+            t = str
+            metavar = 'STR'
+        group.add_argument(f'--{key}', type=t, default=None, metavar=metavar,
+                           help=f'[{default}]')
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Headless sim_2d_exp renderer')
+    parser = argparse.ArgumentParser(
+        description='Headless sim_2d_exp renderer',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--steps', type=int, default=200,
                         help='Number of simulation steps')
-    parser.add_argument('--particles', type=int, default=None,
-                        help='Override number of particles')
-    parser.add_argument('--k', type=int, default=None,
-                        help='Override preference dimensions')
     parser.add_argument('--output', type=str, default='sim_output.png',
                         help='Output image path')
     parser.add_argument('--width', type=int, default=1920,
@@ -286,7 +319,8 @@ def main():
     parser.add_argument('--save-data', action='store_true',
                         help='Also save raw numpy data (.npz)')
     parser.add_argument('--config', type=str, default=None,
-                        help='JSON string of param overrides')
+                        help='JSON string of param overrides (applied before individual --<param> flags)')
+    _add_param_args(parser)
     args = parser.parse_args()
 
     run_headless(args)
