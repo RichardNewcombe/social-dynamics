@@ -396,17 +396,15 @@ def run():
     shadow_divergence = 0.0 # RMS distance between sim and shadow
     running_sim = True
 
-    # ── Frame timing & recording ──
-    target_fps = 0       # 0 = uncapped, >0 = limit to this FPS
-    frame_start_time = time.perf_counter()
+    # ── Recording ──
+    rec_fps = 30         # playback speed of recorded video
     rec_process = None
     rec_frame_count = 0
-    rec_last_capture = 0.0
     rec_filename = ""
 
     def start_recording():
-        nonlocal rec_process, rec_frame_count, rec_last_capture, rec_filename
-        fps = target_fps if target_fps > 0 else 30
+        nonlocal rec_process, rec_frame_count, rec_filename
+        fps = rec_fps
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         rec_filename = os.path.join(os.path.dirname(__file__) or ".",
                                     f"recording_{timestamp}.mp4")
@@ -1352,18 +1350,15 @@ def run():
             sim.step()
             if shadow_sim is not None:
                 shadow_sim.step()
-        changed, v = imgui.drag_int("Target FPS", target_fps, 0.5, 0, 120)
-        if changed:
-            target_fps = v
-        if target_fps > 0:
-            imgui.same_line()
-            imgui.text_colored(imgui.ImVec4(0.5, 0.5, 0.5, 1.0), f"({1000.0/target_fps:.1f}ms)")
         if rec_process is not None:
-            imgui.same_line()
-            imgui.text_colored(imgui.ImVec4(1.0, 0.2, 0.2, 1.0), f"REC {rec_frame_count}f")
+            imgui.text_colored(imgui.ImVec4(1.0, 0.2, 0.2, 1.0),
+                               f"REC  {rec_frame_count} frames  ({rec_fps}fps playback)")
             if imgui.button("Stop Rec", imgui.ImVec2(80, 0)):
                 stop_recording()
         else:
+            changed, v = imgui.drag_int("Video FPS", rec_fps, 0.5, 1, 120)
+            if changed:
+                rec_fps = v
             if imgui.button("Record", imgui.ImVec2(80, 0)):
                 start_recording()
         imgui.separator()
@@ -1841,13 +1836,9 @@ def run():
         imgui.render()
         imgui.backends.opengl3_render_draw_data(imgui.get_draw_data())
 
-        # Recording: capture at target FPS (no duplicates, no skips)
+        # Recording: capture every frame
         if rec_process is not None:
-            rec_interval = 1.0 / (target_fps if target_fps > 0 else 30)
-            now_rec = time.perf_counter()
-            if now_rec - rec_last_capture >= rec_interval - 0.001:
-                capture_frame()
-                rec_last_capture = now_rec
+            capture_frame()
 
         # Swap and FPS
         glfw.swap_buffers(window)
@@ -1858,15 +1849,6 @@ def run():
             fps = frame_count / (now - fps_time)
             frame_count = 0
             fps_time = now
-
-        # Frame rate limiting (when target_fps is set)
-        if target_fps > 0:
-            target_ms = 1000.0 / target_fps
-            elapsed_ms = (time.perf_counter() - frame_start_time) * 1000.0
-            sleep_ms = target_ms - elapsed_ms
-            if sleep_ms > 1.0:
-                time.sleep(sleep_ms / 1000.0)
-        frame_start_time = time.perf_counter()
 
         glfw.set_window_title(window,
             f"Particles [{status}] Step:{sim.step_count} FPS:{fps:.0f}")
