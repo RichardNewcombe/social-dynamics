@@ -396,33 +396,36 @@ def run():
     shadow_divergence = 0.0 # RMS distance between sim and shadow
     running_sim = True
 
+    # ── Frame timing ──
+    target_frame_ms = 0.0   # 0 = uncapped, >0 = target ms per frame
+    frame_start_time = time.perf_counter()
+
     # ── Recording state ──
     rec_process = None
     rec_frame_count = 0
-    rec_interval = 1.0
-    rec_last_time = 0.0
+    rec_fps = 30            # recording framerate
+    rec_every_frame = False  # True = capture every rendered frame
     rec_filename = ""
 
     def start_recording():
-        nonlocal rec_process, rec_frame_count, rec_last_time, rec_filename
+        nonlocal rec_process, rec_frame_count, rec_filename
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         rec_filename = os.path.join(os.path.dirname(__file__) or ".",
-                                    f"timelapse_{timestamp}.mp4")
+                                    f"recording_{timestamp}.mp4")
         rec_frame_count = 0
-        rec_last_time = time.monotonic()
         rec_process = subprocess.Popen([
             "ffmpeg", "-y",
             "-f", "rawvideo",
             "-pixel_format", "rgb24",
             "-video_size", f"{fb_w}x{fb_h}",
-            "-framerate", "30",
+            "-framerate", str(rec_fps),
             "-i", "pipe:0",
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-crf", "20",
             rec_filename,
         ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"Recording started: {rec_filename}")
+        print(f"Recording started: {rec_filename} at {rec_fps}fps")
 
     def stop_recording():
         nonlocal rec_process
@@ -1353,15 +1356,21 @@ def run():
         if rec_process is not None:
             imgui.same_line()
             imgui.text_colored(imgui.ImVec4(1.0, 0.2, 0.2, 1.0), "REC")
-            imgui.text(f"Frames: {rec_frame_count}  "
-                       f"Interval: {rec_interval:.1f}s")
+            imgui.text(f"Frames: {rec_frame_count}  ({rec_fps}fps)")
             if imgui.button("Stop Rec", imgui.ImVec2(80, 0)):
                 stop_recording()
         else:
-            changed, rec_interval = imgui.drag_float(
-                "Rec Interval", rec_interval, 0.05, 0.1, 10.0, "%.1fs")
+            changed, v = imgui.drag_int("Rec FPS", rec_fps, 0.5, 1, 120)
+            if changed:
+                rec_fps = v
+            changed, v = imgui.checkbox("Capture Every Frame", rec_every_frame)
+            if changed:
+                rec_every_frame = v
             if imgui.button("Record", imgui.ImVec2(80, 0)):
                 start_recording()
+        changed, v = imgui.drag_float("Frame Time (ms)", target_frame_ms, 0.5, 0.0, 200.0, "%.1f")
+        if changed:
+            target_frame_ms = v
         imgui.separator()
 
         # Right panel view selector
@@ -1837,12 +1846,9 @@ def run():
         imgui.render()
         imgui.backends.opengl3_render_draw_data(imgui.get_draw_data())
 
-        # Timelapse capture
-        if rec_process is not None:
-            now = time.monotonic()
-            if now - rec_last_time >= rec_interval:
-                rec_last_time = now
-                capture_frame()
+        # Recording capture (every frame when recording)
+        if rec_process is not None and rec_every_frame:
+            capture_frame()
 
         # Swap and FPS
         glfw.swap_buffers(window)
@@ -1853,6 +1859,14 @@ def run():
             fps = frame_count / (now - fps_time)
             frame_count = 0
             fps_time = now
+
+        # Frame rate limiting
+        if target_frame_ms > 0:
+            elapsed_ms = (time.perf_counter() - frame_start_time) * 1000.0
+            sleep_ms = target_frame_ms - elapsed_ms
+            if sleep_ms > 1.0:
+                time.sleep(sleep_ms / 1000.0)
+        frame_start_time = time.perf_counter()
 
         glfw.set_window_title(window,
             f"Particles [{status}] Step:{sim.step_count} FPS:{fps:.0f}")
