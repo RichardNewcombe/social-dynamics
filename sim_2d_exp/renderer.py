@@ -398,19 +398,24 @@ def run():
 
     # ── Recording ──
     rec_fps = 30         # playback speed of recorded video
+    rec_bitrate = 0      # encoding bitrate in Mbps (0 = use CRF quality mode)
+    rec_crf = 18         # CRF quality (0=lossless, 18=high, 23=default, 51=worst)
+    rec_pix_fmt = 0      # 0=yuv444p (best color), 1=yuv420p (smaller, muted color)
     rec_process = None
     rec_frame_count = 0
+    rec_start_time = 0.0
     rec_filename = ""
 
     def start_recording():
-        nonlocal rec_process, rec_frame_count, rec_filename
+        nonlocal rec_process, rec_frame_count, rec_start_time, rec_filename
         fps = rec_fps
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         rec_filename = os.path.join(os.path.dirname(__file__) or ".",
                                     f"recording_{timestamp}.mp4")
         rec_frame_count = 0
-        rec_last_capture = time.perf_counter()
-        rec_process = subprocess.Popen([
+        rec_start_time = time.perf_counter()
+        pix_fmt = "yuv444p" if rec_pix_fmt == 0 else "yuv420p"
+        cmd = [
             "ffmpeg", "-y",
             "-f", "rawvideo",
             "-pixel_format", "rgb24",
@@ -418,11 +423,18 @@ def run():
             "-framerate", str(fps),
             "-i", "pipe:0",
             "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-crf", "20",
-            rec_filename,
-        ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"Recording started: {rec_filename} at {fps}fps")
+            "-pix_fmt", pix_fmt,
+        ]
+        if rec_bitrate > 0:
+            cmd += ["-b:v", f"{rec_bitrate}M", "-maxrate", f"{rec_bitrate}M",
+                    "-bufsize", f"{rec_bitrate * 2}M"]
+        else:
+            cmd += ["-crf", str(rec_crf)]
+        cmd.append(rec_filename)
+        rec_process = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        br_str = f"{rec_bitrate}Mbps" if rec_bitrate > 0 else f"CRF {rec_crf}"
+        print(f"Recording started: {rec_filename} at {fps}fps, {br_str}, {pix_fmt}")
 
     def stop_recording():
         nonlocal rec_process
@@ -1351,14 +1363,31 @@ def run():
             if shadow_sim is not None:
                 shadow_sim.step()
         if rec_process is not None:
+            video_duration = rec_frame_count / max(rec_fps, 1)
             imgui.text_colored(imgui.ImVec4(1.0, 0.2, 0.2, 1.0),
-                               f"REC  {rec_frame_count} frames  ({rec_fps}fps playback)")
+                               f"REC  {rec_frame_count}f  {video_duration:.1f}s video")
             if imgui.button("Stop Rec", imgui.ImVec2(80, 0)):
                 stop_recording()
         else:
             changed, v = imgui.drag_int("Video FPS", rec_fps, 0.5, 1, 120)
             if changed:
                 rec_fps = v
+            changed, v = imgui.drag_int("Bitrate (Mbps)", rec_bitrate, 0.5, 0, 100)
+            if changed:
+                rec_bitrate = v
+            if rec_bitrate == 0:
+                changed, v = imgui.drag_int("CRF", rec_crf, 0.5, 0, 51)
+                if changed:
+                    rec_crf = v
+                imgui.same_line()
+                imgui.text_colored(imgui.ImVec4(0.5, 0.5, 0.5, 1.0),
+                    "0=lossless" if rec_crf == 0 else
+                    "high" if rec_crf <= 18 else
+                    "medium" if rec_crf <= 28 else "low")
+            _pix_fmts = ["yuv444p (full color)", "yuv420p (smaller)"]
+            changed, v = imgui.combo("Chroma", rec_pix_fmt, _pix_fmts)
+            if changed:
+                rec_pix_fmt = v
             if imgui.button("Record", imgui.ImVec2(80, 0)):
                 start_recording()
         imgui.separator()
