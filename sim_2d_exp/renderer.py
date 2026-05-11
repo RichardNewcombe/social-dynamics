@@ -401,6 +401,8 @@ def run():
     rec_bitrate = 0      # encoding bitrate in Mbps (0 = use CRF quality mode)
     rec_crf = 18         # CRF quality (0=lossless, 18=high, 23=default, 51=worst)
     rec_pix_fmt = 0      # 0=yuv444p (best color), 1=yuv420p (smaller, muted color)
+    rec_view = 0         # 0=both panels, 1=left only, 2=right only
+    rec_codec = 0        # 0=H.264, 1=H.265
     rec_process = None
     rec_frame_count = 0
     rec_start_time = 0.0
@@ -415,14 +417,20 @@ def run():
         rec_frame_count = 0
         rec_start_time = time.perf_counter()
         pix_fmt = "yuv444p" if rec_pix_fmt == 0 else "yuv420p"
+        codec = "libx265" if rec_codec == 1 else "libx264"
+        # Video size depends on view selection
+        if rec_view == 0:
+            vid_w, vid_h = fb_w, fb_h
+        else:
+            vid_w, vid_h = fb_w // 2, fb_h
         cmd = [
             "ffmpeg", "-y",
             "-f", "rawvideo",
             "-pixel_format", "rgb24",
-            "-video_size", f"{fb_w}x{fb_h}",
+            "-video_size", f"{vid_w}x{vid_h}",
             "-framerate", str(fps),
             "-i", "pipe:0",
-            "-c:v", "libx264",
+            "-c:v", codec,
             "-pix_fmt", pix_fmt,
         ]
         if rec_bitrate > 0:
@@ -430,11 +438,14 @@ def run():
                     "-bufsize", f"{rec_bitrate * 2}M"]
         else:
             cmd += ["-crf", str(rec_crf)]
+        if rec_codec == 1:
+            cmd += ["-tag:v", "hvc1"]  # Apple compatibility
         cmd.append(rec_filename)
         rec_process = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         br_str = f"{rec_bitrate}Mbps" if rec_bitrate > 0 else f"CRF {rec_crf}"
-        print(f"Recording started: {rec_filename} at {fps}fps, {br_str}, {pix_fmt}")
+        view_str = ["both", "left", "right"][rec_view]
+        print(f"Recording started: {rec_filename} at {fps}fps, {codec}, {br_str}, {pix_fmt}, {view_str}")
 
     def stop_recording():
         nonlocal rec_process
@@ -446,9 +457,18 @@ def run():
 
     def capture_frame():
         nonlocal rec_frame_count
-        data = _GL.glReadPixels(0, 0, fb_w, fb_h,
+        if rec_view == 0:
+            # Both panels
+            x0, cap_w = 0, fb_w
+        elif rec_view == 1:
+            # Left only
+            x0, cap_w = 0, fb_w // 2
+        else:
+            # Right only
+            x0, cap_w = fb_w // 2, fb_w // 2
+        data = _GL.glReadPixels(x0, 0, cap_w, fb_h,
                                 _GL.GL_RGB, _GL.GL_UNSIGNED_BYTE)
-        row_size = fb_w * 3
+        row_size = cap_w * 3
         flipped = bytearray(fb_h * row_size)
         for dst_row in range(fb_h):
             src_row = fb_h - 1 - dst_row
@@ -1388,6 +1408,14 @@ def run():
             changed, v = imgui.combo("Chroma", rec_pix_fmt, _pix_fmts)
             if changed:
                 rec_pix_fmt = v
+            _codecs = ["H.264", "H.265"]
+            changed, v = imgui.combo("Codec", rec_codec, _codecs)
+            if changed:
+                rec_codec = v
+            _views = ["Both panels", "Left only", "Right only"]
+            changed, v = imgui.combo("Record View", rec_view, _views)
+            if changed:
+                rec_view = v
             if imgui.button("Record", imgui.ImVec2(80, 0)):
                 start_recording()
         imgui.separator()
