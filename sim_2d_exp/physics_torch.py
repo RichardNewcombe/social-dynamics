@@ -79,8 +79,8 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
     has_mask = valid_np is not None
 
     pos = torch.tensor(pos_np, dtype=dtype, device=device)
-    prefs = torch.tensor(prefs_np, dtype=torch.float32, device=device)
-    resp = torch.tensor(response_np, dtype=torch.float32, device=device)
+    prefs = torch.tensor(prefs_np, dtype=dtype, device=device)
+    resp = torch.tensor(response_np, dtype=dtype, device=device)
     dm = torch.tensor(dm_np, dtype=dtype, device=device)
     nbr_ids = torch.tensor(nbr_ids_np.astype(np.int64), device=device)
     if has_mask:
@@ -101,9 +101,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
     movement = torch.zeros(n, 2, dtype=dtype, device=device)
 
     if inner_avg:
-        resp_ip = resp.to(dtype)
-        prefs_ip = prefs.to(dtype)
-        ip = (resp_ip.unsqueeze(1) * prefs_ip[nbr_ids]).sum(dim=2) / k
+        ip = (resp.unsqueeze(1) * prefs[nbr_ids]).sum(dim=2) / k
         if pref_dist_w:
             gw = torch.exp(-dists.squeeze(2) ** 2 / (2.0 * pref_dist_sigma ** 2))
             ip = ip * gw
@@ -138,7 +136,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
                 nbr_mean = (nbr_prefs * w.unsqueeze(2)).sum(dim=1)
             else:
                 if has_mask:
-                    nbr_prefs_m = nbr_prefs * valid.unsqueeze(2).float()
+                    nbr_prefs_m = nbr_prefs * valid.unsqueeze(2).to(dtype)
                     nbr_mean = nbr_prefs_m.sum(dim=1) / n_valid.unsqueeze(1)
                 else:
                     nbr_mean = nbr_prefs.mean(dim=1)
@@ -146,7 +144,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
             new_prefs = new_prefs.clamp(-1, 1)
 
         return (new_pos.cpu().to(torch.float64).numpy(),
-                new_prefs.cpu().to(torch.float32).numpy(),
+                new_prefs.cpu().to(torch.float64).numpy(),
                 dm_np,
                 movement.cpu().to(torch.float64).numpy())
 
@@ -271,7 +269,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
             nbr_mean = (nbr_prefs * w.unsqueeze(2)).sum(dim=1)
         else:
             if has_mask:
-                nbr_prefs_m = nbr_prefs * valid.unsqueeze(2).float()
+                nbr_prefs_m = nbr_prefs * valid.unsqueeze(2).to(dtype)
                 nbr_mean = nbr_prefs_m.sum(dim=1) / n_valid.unsqueeze(1)
             else:
                 nbr_mean = nbr_prefs.mean(dim=1)
@@ -279,6 +277,6 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
         new_prefs = new_prefs.clamp(-1, 1)
 
     return (new_pos.cpu().to(torch.float64).numpy(),
-            new_prefs.cpu().to(torch.float32).numpy(),
+            new_prefs.cpu().to(torch.float64).numpy(),
             dm.cpu().to(torch.float64).numpy(),
             movement.cpu().to(torch.float64).numpy())

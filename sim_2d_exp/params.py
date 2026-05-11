@@ -69,7 +69,7 @@ params = dict(
     auto_scale=False,
     reuse_neighbors=True,
     debug_knn=False,
-    knn_method=1,       # 0=Hash Grid, 1=cKDTree (f64 pos), 2=cKDTree (f32 pos)
+    knn_method=3,       # 0=Hash Grid, 1=cKDTree (f64 pos), 2=cKDTree (f32 pos), 3=pykdtree (f64, fastest)
     use_f64=True,       # True = float64 positions
     physics_engine=2,   # 0=Numba, 1=NumPy (original), 2=PyTorch, 3=Grid Field
     grid_res=256,       # grid resolution for field method (grid_res x grid_res)
@@ -109,6 +109,7 @@ params = dict(
     crossover_interval=1,
     binary_noise_eps=0.1,   # max magnitude of noise dims for "Binary d0 + noise"
     pref_color_mode=0,      # 0=RGB, 1=Dim2 Heat, 2=HSV
+    selected_particle=-1,   # index of selected particle for memory view (-1=none)
     use_signal_response=False,  # split prefs into signal + response vectors
     swap_signal_response=False, # swap roles: signal↔response in physics
     vis_pref_source=0,      # 0=Signal, 1=Response (which to visualize)

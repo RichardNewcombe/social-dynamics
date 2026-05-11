@@ -100,6 +100,7 @@ def run():
     selecting = False
     sel_start = [0.0, 0.0]
     sel_end = [0.0, 0.0]
+    click_start = [0.0, 0.0]
 
     def screen_to_sim(sx, sy):
         hw = WINDOW_W // 2
@@ -145,6 +146,8 @@ def run():
                     pan_active = True
                     prev_mouse_pos[0] = mx
                     prev_mouse_pos[1] = my
+                    click_start[0] = mx
+                    click_start[1] = my
             elif action == glfw.RELEASE:
                 if selecting:
                     selecting = False
@@ -165,6 +168,21 @@ def run():
                         matches = mask_x & mask_y
                         sim.tracked_seed[matches] = True
                         sim.tracked[matches] = True
+                else:
+                    # Check if this was a click (minimal drag) → select particle
+                    mx, my = glfw.get_cursor_pos(win)
+                    dx = mx - click_start[0]
+                    dy = my - click_start[1]
+                    if dx * dx + dy * dy < 25:  # less than 5px movement
+                        sim_pt = screen_to_sim(click_start[0], click_start[1])
+                        if sim_pt is not None:
+                            vc = np.array([sim_pt[0], sim_pt[1]], dtype=np.float64)
+                            pos = sim.pos.astype(np.float64)
+                            diff = pos - vc
+                            diff -= np.round(diff)  # periodic wrap
+                            dists_sq = np.sum(diff ** 2, axis=1)
+                            nearest = int(np.argmin(dists_sq))
+                            params['selected_particle'] = nearest
                 pan_active = False
 
     def cursor_pos_callback(win, mx, my):
@@ -322,6 +340,25 @@ def run():
         tex.repeat_x = True
         tex.repeat_y = True
 
+    # Particle memory trail FBO (per-particle neighbor histogram visualization)
+    pmem_trail_tex = ctx.texture((trail_w, trail_h), 3, dtype='f2')
+    pmem_trail_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+    pmem_trail_fbo = ctx.framebuffer(color_attachments=[pmem_trail_tex])
+    pmem_trail_tex2 = ctx.texture((trail_w, trail_h), 3, dtype='f2')
+    pmem_trail_tex2.filter = (moderngl.LINEAR, moderngl.LINEAR)
+    pmem_trail_fbo2 = ctx.framebuffer(color_attachments=[pmem_trail_tex2])
+    for tex in (pmem_trail_tex, pmem_trail_tex2):
+        tex.repeat_x = True
+        tex.repeat_y = True
+
+    # Particle memory VBOs (reusable for neighbor pref splatting)
+    vbo_pmem_pos = ctx.buffer(reserve=num_particles * 2 * 4)
+    vbo_pmem_col = ctx.buffer(reserve=num_particles * 3 * 4)
+    vao_pmem_splat = ctx.vertex_array(prog_splat, [
+        (vbo_pmem_pos, '2f', 'in_pos'),
+        (vbo_pmem_col, '3f', 'in_color'),
+    ])
+
     # Pref-space VBOs: positions = (pref[0], pref[1]) mapped to [0,1]
     vbo_pref_pos = ctx.buffer(reserve=num_particles * 2 * 4)
     vbo_pref_col = ctx.buffer(reserve=num_particles * 3 * 4)
@@ -417,6 +454,7 @@ def run():
         nonlocal vbo_causal_pos, vbo_causal_col, vao_causal_splat, vao_causal_particle
         nonlocal vbo_pref_pos, vbo_pref_col, vao_pref_splat
         nonlocal vbo_shadow_pos, vbo_shadow_col, vao_shadow
+        nonlocal vbo_pmem_pos, vbo_pmem_col, vao_pmem_splat
         n = params['num_particles']
         vbo_pos = ctx.buffer(reserve=n * 2 * 4)
         vbo_col = ctx.buffer(reserve=n * 3 * 4)
@@ -458,6 +496,12 @@ def run():
             (vbo_shadow_pos, '2f', 'in_pos'),
             (vbo_shadow_col, '3f', 'in_color'),
         ])
+        vbo_pmem_pos = ctx.buffer(reserve=n * 2 * 4)
+        vbo_pmem_col = ctx.buffer(reserve=n * 3 * 4)
+        vao_pmem_splat = ctx.vertex_array(prog_splat, [
+            (vbo_pmem_pos, '2f', 'in_pos'),
+            (vbo_pmem_col, '3f', 'in_color'),
+        ])
 
     def do_reset():
         nonlocal running_sim, shadow_sim, shadow_divergence
@@ -485,7 +529,8 @@ def run():
         for fbo in (trail_fbo, trail_fbo2, vel_fbo, vel_fbo2,
                     causal_fbo, causal_fbo2,
                     pref_trail_fbo, pref_trail_fbo2,
-                    force_trail_fbo, force_trail_fbo2):
+                    force_trail_fbo, force_trail_fbo2,
+                    pmem_trail_fbo, pmem_trail_fbo2):
             fbo.use()
             ctx.clear(0, 0, 0)
         running_sim = True
@@ -753,6 +798,96 @@ def run():
             pref_trail_tex, pref_trail_tex2 = pref_trail_tex2, pref_trail_tex
             pref_trail_fbo, pref_trail_fbo2 = pref_trail_fbo2, pref_trail_fbo
 
+        # ── Particle memory trail pass (neighbor histogram for selected particle) ──
+        if cur_pref_view == 8:
+            if cur_pref_view != prev_pref_view:
+                for fbo in (pmem_trail_fbo, pmem_trail_fbo2):
+                    fbo.use()
+                    ctx.clear(0, 0, 0)
+
+            sel_idx = params['selected_particle']
+            n_pmem_pts = 0
+            if (sel_idx >= 0 and sel_idx < sim.n and sim.nbr_ids is not None):
+                # Get selected particle's neighbors
+                nbr_row = sim.nbr_ids[sel_idx]  # (n_nbr,)
+                if sim._valid_mask is not None:
+                    valid_row = sim._valid_mask[sel_idx]
+                    nbr_indices = nbr_row[valid_row]
+                else:
+                    nbr_indices = nbr_row
+                n_pmem_pts = len(nbr_indices)
+
+                if n_pmem_pts > 0:
+                    prefs = sim.get_vis_prefs()
+                    k = sim.k
+                    nbr_prefs = prefs[nbr_indices]  # (n_pts, K)
+
+                    # Isometric projection (same as Pref3D)
+                    d0 = nbr_prefs[:, 0] if k > 0 else np.zeros(n_pmem_pts, dtype=np.float32)
+                    d1 = nbr_prefs[:, 1] if k > 1 else np.zeros(n_pmem_pts, dtype=np.float32)
+                    d2 = nbr_prefs[:, 2] if k > 2 else np.zeros(n_pmem_pts, dtype=np.float32)
+                    sqrt2 = np.float32(np.sqrt(2))
+                    sqrt6 = np.float32(np.sqrt(6))
+                    px = (d0 - d2) / sqrt2
+                    py = (2.0 * d1 - d0 - d2) / sqrt6
+                    max_range = 4.0 / sqrt6
+                    scale = 0.45 / max_range
+                    pmem_pos = np.zeros((n_pmem_pts, 2), dtype=np.float32)
+                    pmem_pos[:, 0] = px * scale + 0.5
+                    pmem_pos[:, 1] = py * scale + 0.5
+
+                    # Colors: RGB from prefs
+                    pmem_col = np.clip((nbr_prefs[:, :3] + 1.0) * 0.5, 0, 1).astype(np.float32)
+                    if k < 3:
+                        c = np.full((n_pmem_pts, 3), 0.5, np.float32)
+                        c[:, :min(k, 3)] = pmem_col[:, :min(k, 3)]
+                        pmem_col = c
+
+                    vbo_pmem_pos.orphan(n_pmem_pts * 2 * 4)
+                    vbo_pmem_pos.write(pmem_pos.tobytes())
+                    vbo_pmem_col.orphan(n_pmem_pts * 3 * 4)
+                    vbo_pmem_col.write(pmem_col.tobytes())
+
+            # Decay
+            pmem_trail_fbo2.use()
+            ctx.clear(0, 0, 0)
+            ctx.blend_func = moderngl.ONE, moderngl.ZERO
+            pmem_trail_tex.use(0)
+            prog_trail_decay['trail_tex'] = 0
+            prog_trail_decay['decay'] = params['trail_decay']
+            vao_trail_decay.render(moderngl.TRIANGLE_STRIP)
+
+            # Splat (only if we have points)
+            if n_pmem_pts > 0:
+                ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE
+                prog_splat['viewport_offset'] = (0.0, 0.0)
+                prog_splat['viewport_scale'] = (1.0, 1.0)
+                prog_splat['view_center'] = (0.5, 0.5)
+                prog_splat['view_zoom'] = 1.0
+                prog_splat['point_size'] = params['point_size']
+                vao_pmem_splat.render(moderngl.POINTS, vertices=n_pmem_pts)
+
+                # Also splat the selected particle itself as a bright white marker
+                sel_pref = prefs[sel_idx:sel_idx+1]
+                d0s = sel_pref[:, 0] if k > 0 else np.zeros(1, dtype=np.float32)
+                d1s = sel_pref[:, 1] if k > 1 else np.zeros(1, dtype=np.float32)
+                d2s = sel_pref[:, 2] if k > 2 else np.zeros(1, dtype=np.float32)
+                spx = (d0s - d2s) / sqrt2
+                spy = (2.0 * d1s - d0s - d2s) / sqrt6
+                sel_pt = np.array([[spx[0] * scale + 0.5, spy[0] * scale + 0.5]], dtype=np.float32)
+                sel_pt_col = np.array([[1.0, 1.0, 1.0]], dtype=np.float32)
+                vbo_pmem_pos.orphan(1 * 2 * 4)
+                vbo_pmem_pos.write(sel_pt.tobytes())
+                vbo_pmem_col.orphan(1 * 3 * 4)
+                vbo_pmem_col.write(sel_pt_col.tobytes())
+                prog_splat['point_size'] = params['point_size'] + 4.0
+                vao_pmem_splat.render(moderngl.POINTS, vertices=1)
+                prog_splat['point_size'] = params['point_size']
+
+            # Swap
+            pmem_trail_tex, pmem_trail_tex2 = pmem_trail_tex2, pmem_trail_tex
+            pmem_trail_fbo, pmem_trail_fbo2 = pmem_trail_fbo2, pmem_trail_fbo
+
         # ── Force landscape computation (before trail accumulation) ──
         rv = params['right_view']
         force_rgb = None
@@ -987,6 +1122,21 @@ def run():
             vao_causal_particle.render(moderngl.POINTS, vertices=n_tracked)
             prog_particle['point_size'] = params['point_size']
 
+        # Highlight selected particle (for PMem view)
+        sel_idx = params['selected_particle']
+        if sel_idx >= 0 and sel_idx < sim.n:
+            sel_pos = positions[sel_idx:sel_idx+1]
+            sel_col = np.array([[1.0, 1.0, 0.0]], dtype=np.float32)  # yellow ring
+            vbo_causal_pos.orphan(1 * 2 * 4)
+            vbo_causal_pos.write(sel_pos.tobytes())
+            vbo_causal_col.orphan(1 * 3 * 4)
+            vbo_causal_col.write(sel_col.tobytes())
+            prog_particle['viewport_offset'] = (0.0, 0.0)
+            prog_particle['viewport_scale'] = (1.0, 1.0)
+            prog_particle['point_size'] = params['point_size'] + 5.0
+            vao_causal_particle.render(moderngl.POINTS, vertices=1)
+            prog_particle['point_size'] = params['point_size']
+
         # Right half: display selected view
         ctx.viewport = (fb_w // 2, 0, fb_w // 2, fb_h)
         ctx.blend_func = moderngl.ONE, moderngl.ZERO
@@ -1064,12 +1214,13 @@ def run():
         right_tex = memory_tex if rv == 7 else \
                     (force_var_tex if params['force_show_variance'] else force_trail_tex) if rv == 6 else \
                     grid_debug_tex if rv == 5 else \
+                    pmem_trail_tex if rv == 8 else \
                     pref_trail_tex if rv in (3, 4) else \
                     vel_tex if rv == 1 else \
                     causal_tex if rv == 2 else trail_tex
         right_tex.use(0)
         prog_display['tex'] = 0
-        if rv in (3, 4, 5, 6, 7):
+        if rv in (3, 4, 5, 6, 7, 8):
             # Pref/grid views: no pan/zoom, always centered
             prog_display['view_center'] = (0.5, 0.5)
             prog_display['view_zoom'] = 1.0
@@ -1082,7 +1233,7 @@ def run():
         vao_display.render(moderngl.TRIANGLE_STRIP)
 
         # ── Pref-space axis lines ──
-        if rv in (3, 4):
+        if rv in (3, 4, 8):
             ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
             sqrt2 = np.float32(np.sqrt(2))
             sqrt6 = np.float32(np.sqrt(6))
@@ -1095,7 +1246,7 @@ def run():
                 scale = 0.45 / max_range
                 return px * scale + 0.5, py * scale + 0.5
 
-            if rv == 4:
+            if rv in (4, 8):
                 # Isometric axes: origin → each axis tip, colored R/G/B
                 ox, oy = _iso_project(0, 0, 0)
                 # Axis tips at ±1 along each dim
@@ -1237,11 +1388,29 @@ def run():
         imgui.same_line()
         if imgui.radio_button("Memory", params['right_view'] == 7):
             params['right_view'] = 7
+        imgui.same_line()
+        if imgui.radio_button("PMem", params['right_view'] == 8):
+            params['right_view'] = 8
         if params['right_view'] in (3, 4):
             changed, v = imgui.combo("Pref Colors", params['pref_color_mode'],
                                      PREF_COLOR_MODES)
             if changed:
                 params['pref_color_mode'] = v
+        if params['right_view'] == 8:
+            sel_idx = params['selected_particle']
+            if sel_idx >= 0 and sel_idx < sim.n:
+                imgui.text(f"Selected: particle {sel_idx}")
+                prefs = sim.get_vis_prefs()
+                p = prefs[sel_idx]
+                imgui.text(f"  pref: [{p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}]" if sim.k >= 3
+                           else f"  pref: {p[:sim.k]}")
+                if imgui.button("Deselect"):
+                    params['selected_particle'] = -1
+            else:
+                imgui.text_colored(imgui.ImVec4(0.6, 0.6, 0.6, 1.0),
+                                   "Click a particle to select")
+            imgui.text_colored(imgui.ImVec4(0.5, 0.5, 0.5, 1.0),
+                               "Click on left panel to select")
         if params['right_view'] in (5, 6, 7):
             changed, v = imgui.drag_int("Grid Res##top", params['grid_res'], 1.0, 8, 256)
             if changed:

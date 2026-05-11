@@ -235,7 +235,7 @@ class Simulation:
 
     def _find_neighbors(self):
         """Find neighbors. Method selected by params['knn_method']:
-           0 = Hash Grid, 1 = cKDTree f64, 2 = cKDTree f32."""
+           0 = Hash Grid, 1 = cKDTree f64, 2 = cKDTree f32, 3 = pykdtree."""
         pos = self.pos
         n = len(pos)
         nbr_mode = params['neighbor_mode']
@@ -253,6 +253,8 @@ class Simulation:
 
         if knn_method == 0:
             self._find_neighbors_hash(pos, n, nbr_mode, n_nbr, radius, _tb0)
+        elif knn_method == 3:
+            self._find_neighbors_pykdtree(pos, n, nbr_mode, n_nbr, radius, _tb0)
         else:
             if knn_method == 1:
                 query_pos = pos.astype(np.float64)
@@ -342,6 +344,72 @@ class Simulation:
             self._t_query = time.perf_counter() - _tq0
             self.nbr_ids = nbr_ids
             self._valid_mask = None
+
+    def _find_neighbors_pykdtree(self, pos, n, nbr_mode, n_nbr, radius, _tb0):
+        """pykdtree neighbor search with periodic boundary via border replication.
+
+        Uses OpenMP thread pool (no per-call spawn overhead) and replicates
+        border particles to handle toroidal wrapping.
+        """
+        from pykdtree.kdtree import KDTree as PyKDTree
+
+        query_pos = (pos % SPACE).astype(np.float64)
+        L = SPACE
+
+        # Identify border particles within margin of any edge
+        # margin = max neighbor distance expected; generous for safety
+        margin = 0.15 * L
+        bx_lo = query_pos[:, 0] < margin
+        bx_hi = query_pos[:, 0] > L - margin
+        by_lo = query_pos[:, 1] < margin
+        by_hi = query_pos[:, 1] > L - margin
+        border = bx_lo | bx_hi | by_lo | by_hi
+        bpos = query_pos[border]
+        bidx = np.where(border)[0]
+
+        # Create periodic replicas of border particles only
+        replicas = []
+        rep_idx = []
+        offsets = np.array(
+            [[-L, -L], [-L, 0], [-L, L],
+             [0, -L],           [0, L],
+             [L, -L],  [L, 0],  [L, L]], dtype=np.float64)
+        for off in offsets:
+            replicas.append(bpos + off)
+            rep_idx.append(bidx)
+
+        if replicas:
+            all_pos = np.vstack([query_pos] + replicas)
+            all_idx = np.concatenate([np.arange(n, dtype=np.int64)] + rep_idx)
+        else:
+            all_pos = query_pos
+            all_idx = np.arange(n, dtype=np.int64)
+
+        _tb1 = time.perf_counter()
+        self._t_build = _tb1 - _tb0
+
+        tree = PyKDTree(all_pos)
+
+        if nbr_mode == 2:
+            # Radius mode: query enough neighbors, filter by distance
+            max_k = min(n_nbr * 2, n - 1)
+            dists_raw, raw_ids = tree.query(query_pos, k=max_k + 1)
+            # Map replica indices back to originals
+            mapped_ids = all_idx[raw_ids]
+            # Remove self (first column is self)
+            mapped_ids = mapped_ids[:, 1:]
+            dists_raw = dists_raw[:, 1:]
+            valid = dists_raw <= radius
+            self.nbr_ids = mapped_ids.astype(np.int64)
+            self._valid_mask = valid
+        else:
+            dists_raw, raw_ids = tree.query(query_pos, k=n_nbr + 1)
+            mapped_ids = all_idx[raw_ids]
+            # Remove self (closest neighbor = self)
+            self.nbr_ids = mapped_ids[:, 1:].astype(np.int64)
+            self._valid_mask = None
+
+        self._t_query = time.perf_counter() - _tb1
 
     def _find_neighbors_delaunay(self, pos, n, _tb0):
         """Delaunay triangulation neighbor finding (periodic).
@@ -1095,7 +1163,7 @@ class Simulation:
                 torch_precision=params['torch_precision'],
                 torch_device_idx=params['torch_device'])
             self.pos = new_pos.astype(pos.dtype)
-            self.prefs = new_prefs
+            self.prefs = new_prefs.astype(self._pref_dtype)
             self.dir_matrix = new_dm.astype(dm.dtype)
             self._movement = mov.astype(self._movement.dtype)
             self._t_physics = time.perf_counter() - _tp0
