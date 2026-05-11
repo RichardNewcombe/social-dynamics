@@ -69,7 +69,7 @@ params = dict(
     auto_scale=False,
     reuse_neighbors=True,
     debug_knn=False,
-    knn_method=3,       # 0=Hash Grid, 1=cKDTree (f64 pos), 2=cKDTree (f32 pos), 3=pykdtree (f64, fastest)
+    knn_method=1,       # 0=Hash Grid, 1=cKDTree (f64 pos), 2=cKDTree (f32 pos), 3=pykdtree (f64, fastest — bundles own libomp, may conflict with numba/torch on macOS)
     use_f64=True,       # True = float64 positions
     physics_engine=2,   # 0=Numba, 1=NumPy (original), 2=PyTorch, 3=Grid Field
     grid_res=256,       # grid resolution for field method (grid_res x grid_res)
