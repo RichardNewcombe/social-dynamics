@@ -1762,6 +1762,9 @@ def run():
                 changed, v = imgui.combo("Torch Compute", params['torch_precision'], _torch_precs)
                 if changed:
                     params['torch_precision'] = v
+                changed, v = imgui.checkbox("Torch Prefs f32", params['torch_prefs_f32'])
+                if changed:
+                    params['torch_prefs_f32'] = v
             changed, v = imgui.checkbox("Perturb Pos LSB", params['perturb_pos_bits'])
             if changed:
                 params['perturb_pos_bits'] = v

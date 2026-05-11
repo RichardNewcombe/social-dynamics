@@ -40,7 +40,7 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
                social, social_dist_weight,
                pref_weighted, pref_inner, inner_avg,
                pref_dist_w, pref_dist_sigma, best_mode, boltzmann_beta=5.0, ignore_self_pref=False, normalize_direction=True,
-               torch_precision=2, torch_device_idx=0):
+               torch_precision=2, torch_device_idx=0, prefs_f32=False):
     """Full physics step using PyTorch vectorized ops.
 
     Args:
@@ -55,6 +55,8 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
         pref_dist_w, pref_dist_sigma, best_mode: additional params
         torch_precision: 0=f16, 1=bf16, 2=f32, 3=f64
         torch_device_idx: 0=auto, 1=cpu
+        prefs_f32: if True, force prefs/response tensors to float32 regardless
+            of torch_precision (legacy behavior, lower memory, faster on MPS)
 
     Returns:
         (new_pos, new_prefs, new_dm, movement) as numpy arrays
@@ -78,9 +80,10 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
     n = len(pos_np)
     has_mask = valid_np is not None
 
+    pref_dtype = torch.float32 if prefs_f32 else dtype
     pos = torch.tensor(pos_np, dtype=dtype, device=device)
-    prefs = torch.tensor(prefs_np, dtype=dtype, device=device)
-    resp = torch.tensor(response_np, dtype=dtype, device=device)
+    prefs = torch.tensor(prefs_np, dtype=pref_dtype, device=device)
+    resp = torch.tensor(response_np, dtype=pref_dtype, device=device)
     dm = torch.tensor(dm_np, dtype=dtype, device=device)
     nbr_ids = torch.tensor(nbr_ids_np.astype(np.int64), device=device)
     if has_mask:

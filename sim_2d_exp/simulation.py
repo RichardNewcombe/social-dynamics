@@ -1161,7 +1161,8 @@ class Simulation:
                 ignore_self_pref=params['ignore_self_pref'],
                 normalize_direction=params['normalize_direction'],
                 torch_precision=params['torch_precision'],
-                torch_device_idx=params['torch_device'])
+                torch_device_idx=params['torch_device'],
+                prefs_f32=params['torch_prefs_f32'])
             self.pos = new_pos.astype(pos.dtype)
             self.prefs = new_prefs.astype(self._pref_dtype)
             self.dir_matrix = new_dm.astype(dm.dtype)

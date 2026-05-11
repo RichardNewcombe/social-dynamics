@@ -102,6 +102,7 @@ params = dict(
     pref_quant_levels=10, # number of quantization levels between -1 and 1
     torch_precision=3,  # 0=f16, 1=bf16, 2=f32, 3=f64
     torch_device=0,     # 0=auto (mps if available), 1=cpu
+    torch_prefs_f32=False,  # force prefs/response tensors to f32 regardless of torch_precision (legacy behavior)
     unit_prefs=False,
     track_mode=2,       # 0=Frozen (seed only), 1=+Neighbors, 2=Causal Spread
     crossover=False,
