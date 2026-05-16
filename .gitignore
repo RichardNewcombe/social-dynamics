@@ -37,3 +37,6 @@ timelapse/
 *.out
 *.synctex.gz
 x.log
+*.png
+*.gif
+emergence_frames/
