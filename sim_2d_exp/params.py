@@ -95,14 +95,14 @@ params = dict(
     pos_mantissa_bits=52,     # number of mantissa bits to keep (10-52)
     truncate_pref_bits=False, # truncate preference mantissa to N bits
     pref_mantissa_bits=23,    # number of mantissa bits to keep (1-23, float32)
-    pref_precision=2,         # 0=f16 (10-bit mantissa), 1=f32 (23-bit), 2=f64 (52-bit)
+    pref_precision=1,         # 0=f16 (10-bit mantissa), 1=f32 (23-bit, default — matches original sim), 2=f64 (52-bit)
     force_vis_mode=0,    # 0=Max Pref RGB, 1=Optimal Pref RGB, 2=Direction HSV
     force_show_variance=False,  # show temporal variance instead of mean
     quantize_pref=False, # quantize preferences to discrete levels
     pref_quant_levels=10, # number of quantization levels between -1 and 1
     torch_precision=3,  # 0=f16, 1=bf16, 2=f32, 3=f64
     torch_device=0,     # 0=auto (mps if available), 1=cpu
-    torch_prefs_f32=False,  # force prefs/response tensors to f32 regardless of torch_precision (legacy behavior)
+    torch_prefs_f32=True,   # force prefs/response tensors to f32 regardless of torch_precision (default — matches original sim; set False for f64 prefs)
     unit_prefs=False,
     track_mode=2,       # 0=Frozen (seed only), 1=+Neighbors, 2=Causal Spread
     crossover=False,
