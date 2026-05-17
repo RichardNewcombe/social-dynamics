@@ -19,7 +19,7 @@ from scipy.spatial import cKDTree
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
-from .params import SPACE
+from sim_2d_exp.params import SPACE
 
 HIER_DEFAULTS = dict(
     step_size=0.005,

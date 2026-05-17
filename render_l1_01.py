@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from scipy.spatial import ConvexHull
 
-from sim_2d_cuda.hierarchical import HierarchicalSimulation
+from sim_hierarchical.hierarchical import HierarchicalSimulation
 
 
 def render_particles(sim, step, output_path, figsize=(10, 10)):

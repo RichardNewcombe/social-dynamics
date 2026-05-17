@@ -13,7 +13,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sim_2d_cuda.hierarchical import HierarchicalSimulation
+from sim_hierarchical.hierarchical import HierarchicalSimulation
 from sim_2d_exp.params import params, SPACE
 from scipy.spatial import cKDTree
 
