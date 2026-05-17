@@ -73,6 +73,23 @@ void main() {
 }
 '''
 
+# ── Translucent disc for L1 cluster markers ──
+# Solid-ish interior + slightly darker rim, with a uniform alpha so the
+# underlying L0 particles remain visible.
+L1_MARKER_FRAG = '''
+#version 410 core
+in vec3 v_color;
+out vec4 fragColor;
+uniform float marker_alpha;
+void main() {
+    vec2 pc = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(pc, pc);
+    if (r2 > 1.0) discard;
+    float edge = smoothstep(1.0, 0.7, r2);
+    fragColor = vec4(v_color, marker_alpha * edge);
+}
+'''
+
 # ── Display trail texture with zoom/pan and HDR clamp ──
 DISPLAY_FRAG = '''
 #version 410 core

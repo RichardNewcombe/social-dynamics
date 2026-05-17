@@ -114,6 +114,19 @@ params = dict(
     use_signal_response=False,  # split prefs into signal + response vectors
     swap_signal_response=False, # swap roles: signal↔response in physics
     vis_pref_source=0,      # 0=Signal, 1=Response (which to visualize)
+    # ── Clustering (observer-only; L1 movement not yet applied) ──
+    cluster_enabled=False,         # turn on bond/cluster tracking
+    cluster_bond_alpha=0.01,       # bond growth rate per step (when paired)
+    cluster_bond_beta=0.005,       # bond decay per step (all pairs)
+    cluster_bond_pref_weight=0.5,  # 0=spatial only, 1=spatial × pref-cosine
+    cluster_bond_radius=0.08,      # max pair distance that updates bonds
+    cluster_threshold=0.85,        # bond strength needed for adjacency
+    cluster_min_size=3,            # smaller components dropped
+    cluster_l1_mode=0,             # 0=per-dim max, 1=per-dim argmax by |·|
+    cluster_show_centroids=True,   # draw L1 markers in left panel
+    cluster_centroid_size_scale=4.0,  # marker size = point_size * scale
+    cluster_centroid_alpha=0.55,   # marker alpha (lets L0 particles show)
+    cluster_l1_weight=0.0,         # L1 movement contribution (0 = pure L0)
 )
 
 auto_scale_ref = dict(

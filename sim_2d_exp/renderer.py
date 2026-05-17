@@ -28,11 +28,13 @@ from .params import (params, auto_scale_ref, SPACE, POS_DISTS, PREF_DISTS,
 from .shaders import (
     PARTICLE_VERT, PARTICLE_FRAG, QUAD_VERT, TRAIL_FRAG,
     SPLAT_FRAG, DISPLAY_FRAG, BOX_VERT, BOX_FRAG, LINE_FRAG,
+    L1_MARKER_FRAG,
 )
 from .spatial import make_radius_circles, warmup_jit, periodic_dist
 from .physics_numba import warmup_numba_physics
 from .physics_torch import _HAS_TORCH, _TORCH_DEVICE
 from .simulation import Simulation
+from .cluster import ClusterTracker
 
 
 WINDOW_W, WINDOW_H = 0, 0
@@ -239,6 +241,17 @@ def run():
         (vbo_col, '3f', 'in_color'),
     ])
 
+    # L1 cluster marker program (translucent disc)
+    prog_l1_marker = ctx.program(vertex_shader=PARTICLE_VERT,
+                                 fragment_shader=L1_MARKER_FRAG)
+    # Worst case = one cluster per particle; reserve accordingly.
+    vbo_l1_pos = ctx.buffer(reserve=num_particles * 2 * 4)
+    vbo_l1_col = ctx.buffer(reserve=num_particles * 3 * 4)
+    vao_l1_marker = ctx.vertex_array(prog_l1_marker, [
+        (vbo_l1_pos, '2f', 'in_pos'),
+        (vbo_l1_col, '3f', 'in_color'),
+    ])
+
     # Trail FBO setup (ping-pong pair)
     trail_w, trail_h = fb_w // 2, fb_h
     trail_tex = ctx.texture((trail_w, trail_h), 3, dtype='f2')
@@ -394,6 +407,7 @@ def run():
     sim = Simulation()
     shadow_sim = None       # perturbed copy for divergence tracking
     shadow_divergence = 0.0 # RMS distance between sim and shadow
+    cluster = ClusterTracker()
     running_sim = True
 
     # ── Recording ──
@@ -487,6 +501,7 @@ def run():
         nonlocal vbo_pref_pos, vbo_pref_col, vao_pref_splat
         nonlocal vbo_shadow_pos, vbo_shadow_col, vao_shadow
         nonlocal vbo_pmem_pos, vbo_pmem_col, vao_pmem_splat
+        nonlocal vbo_l1_pos, vbo_l1_col, vao_l1_marker
         n = params['num_particles']
         vbo_pos = ctx.buffer(reserve=n * 2 * 4)
         vbo_col = ctx.buffer(reserve=n * 3 * 4)
@@ -534,6 +549,12 @@ def run():
             (vbo_pmem_pos, '2f', 'in_pos'),
             (vbo_pmem_col, '3f', 'in_color'),
         ])
+        vbo_l1_pos = ctx.buffer(reserve=n * 2 * 4)
+        vbo_l1_col = ctx.buffer(reserve=n * 3 * 4)
+        vao_l1_marker = ctx.vertex_array(prog_l1_marker, [
+            (vbo_l1_pos, '2f', 'in_pos'),
+            (vbo_l1_col, '3f', 'in_color'),
+        ])
 
     def do_reset():
         nonlocal running_sim, shadow_sim, shadow_divergence
@@ -547,6 +568,7 @@ def run():
         params['perturb_pos_bits'] = False
         sim.reset()
         params['perturb_pos_bits'] = was_perturb
+        cluster.reset()
         # Shadow sim: exact copy of main, perturb positions only if enabled
         if params['shadow_sim']:
             import copy
@@ -619,6 +641,8 @@ def run():
                 sim.step(reuse_neighbors=(reuse and sub > 0))
                 if shadow_sim is not None:
                     shadow_sim.step(reuse_neighbors=(reuse and sub > 0))
+                if params['cluster_enabled']:
+                    cluster.step(sim.pos, sim.prefs, params)
         t_sim = time.perf_counter() - t0
 
         # ── Shadow divergence ──
@@ -1081,6 +1105,29 @@ def run():
         prog_particle['view_zoom'] = view_zoom
         prog_particle['point_size'] = params['point_size']
         vao_particle.render(moderngl.POINTS)
+
+        # L1 cluster markers (translucent discs over L0 particles)
+        if (params['cluster_enabled'] and params['cluster_show_centroids']
+                and cluster.n_clusters > 0):
+            l1_pos, l1_col = cluster.get_marker_data()
+            n_l1 = len(l1_pos)
+            need = n_l1 * 2 * 4
+            if need > vbo_l1_pos.size:
+                vbo_l1_pos.orphan(need)
+                vbo_l1_col.orphan(n_l1 * 3 * 4)
+            vbo_l1_pos.write(l1_pos.tobytes())
+            vbo_l1_col.write(l1_col.tobytes())
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            prog_l1_marker['viewport_offset'] = (0.0, 0.0)
+            prog_l1_marker['viewport_scale'] = (1.0, 1.0)
+            prog_l1_marker['view_center'] = tuple(view_center)
+            prog_l1_marker['view_zoom'] = view_zoom
+            prog_l1_marker['point_size'] = (params['point_size'] *
+                                            params['cluster_centroid_size_scale'])
+            prog_l1_marker['marker_alpha'] = params['cluster_centroid_alpha']
+            vao_l1_marker.render(moderngl.POINTS, vertices=n_l1)
+            # Restore additive blend for downstream passes
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE
 
         # Shadow sim overlay (white rings + divergence lines)
         if shadow_sim is not None:
@@ -1828,6 +1875,64 @@ def run():
             changed, v = imgui.drag_float("Radius", params['neighbor_radius'], 0.001, 0.001, 0.3, "%.10g")
             if changed and abs(v - params['neighbor_radius']) > 1e-15:
                 params['neighbor_radius'] = v
+
+        # Clustering / L1 observer
+        if imgui.collapsing_header("Clustering (L1)"):
+            changed, v = imgui.checkbox("Enabled", params['cluster_enabled'])
+            if changed:
+                params['cluster_enabled'] = v
+            imgui.same_line()
+            imgui.text_colored(imgui.ImVec4(0.6, 0.85, 1.0, 1.0),
+                               f"clusters: {cluster.n_clusters}")
+            if params['cluster_enabled']:
+                imgui.text("Bond formation")
+                _, v = imgui.drag_float("alpha (growth)", params['cluster_bond_alpha'],
+                                        0.0005, 0.0, 0.2, "%.4f")
+                if abs(v - params['cluster_bond_alpha']) > 1e-15:
+                    params['cluster_bond_alpha'] = v
+                _, v = imgui.drag_float("beta (decay)", params['cluster_bond_beta'],
+                                        0.0005, 0.0, 0.1, "%.4f")
+                if abs(v - params['cluster_bond_beta']) > 1e-15:
+                    params['cluster_bond_beta'] = v
+                _, v = imgui.drag_float("pref weight", params['cluster_bond_pref_weight'],
+                                        0.01, 0.0, 1.0, "%.2f")
+                if abs(v - params['cluster_bond_pref_weight']) > 1e-15:
+                    params['cluster_bond_pref_weight'] = v
+                _, v = imgui.drag_float("bond radius", params['cluster_bond_radius'],
+                                        0.001, 0.005, 0.4, "%.3f")
+                if abs(v - params['cluster_bond_radius']) > 1e-15:
+                    params['cluster_bond_radius'] = v
+
+                imgui.text("Clustering")
+                _, v = imgui.drag_float("threshold", params['cluster_threshold'],
+                                        0.01, 0.0, 1.0, "%.2f")
+                if abs(v - params['cluster_threshold']) > 1e-15:
+                    params['cluster_threshold'] = v
+                _, v = imgui.drag_int("min size", params['cluster_min_size'], 0.5, 1, 50)
+                params['cluster_min_size'] = v
+                _l1_modes = ["per-dim max", "per-dim argmax |·|"]
+                changed, v = imgui.combo("L1 vector", params['cluster_l1_mode'], _l1_modes)
+                if changed:
+                    params['cluster_l1_mode'] = v
+
+                imgui.text("L1 display")
+                changed, v = imgui.checkbox("show centroids", params['cluster_show_centroids'])
+                if changed:
+                    params['cluster_show_centroids'] = v
+                _, v = imgui.drag_float("size scale", params['cluster_centroid_size_scale'],
+                                        0.1, 1.0, 20.0, "%.1f")
+                if abs(v - params['cluster_centroid_size_scale']) > 1e-15:
+                    params['cluster_centroid_size_scale'] = v
+                _, v = imgui.drag_float("alpha", params['cluster_centroid_alpha'],
+                                        0.01, 0.0, 1.0, "%.2f")
+                if abs(v - params['cluster_centroid_alpha']) > 1e-15:
+                    params['cluster_centroid_alpha'] = v
+
+                imgui.text("L1 physics (not yet applied)")
+                _, v = imgui.drag_float("L1 weight", params['cluster_l1_weight'],
+                                        0.01, 0.0, 5.0, "%.2f")
+                if abs(v - params['cluster_l1_weight']) > 1e-15:
+                    params['cluster_l1_weight'] = v
 
         # Reset-required parameters
         if imgui.collapsing_header("Reset-Required Params"):
