@@ -638,11 +638,41 @@ def run():
             spf = params['steps_per_frame']
             reuse = params['reuse_neighbors']
             for sub in range(spf):
-                sim.step(reuse_neighbors=(reuse and sub > 0))
-                if shadow_sim is not None:
-                    shadow_sim.step(reuse_neighbors=(reuse and sub > 0))
-                if params['cluster_enabled']:
+                clust_on = params['cluster_enabled']
+                l1_w = params['cluster_l1_weight'] if clust_on else 0.0
+
+                if l1_w > 0:
+                    # L0 + L1: snapshot, run L0, capture movement, run cluster,
+                    # add L1 contribution, re-apply combined movement.
+                    old_pos = sim.pos.copy()
+                    sim.step(reuse_neighbors=(reuse and sub > 0))
+                    if shadow_sim is not None:
+                        shadow_sim.step(reuse_neighbors=(reuse and sub > 0))
+                    dt = params['step_size']
+                    # Periodic-aware L0 movement
+                    l0_delta = sim.pos - old_pos
+                    l0_delta -= SPACE * np.round(l0_delta / SPACE)
+                    l0_movement = l0_delta / max(dt, 1e-12)
+
                     cluster.step(sim.pos, sim.prefs, params)
+                    if cluster.n_clusters >= 2:
+                        l1_mv = cluster.compute_l1_movement(
+                            n_neighbors=params['cluster_l1_n_neighbors'])
+                        # Distribute L1 movement to each cluster's members
+                        total = l0_movement.copy()
+                        labels = cluster.cluster_labels
+                        for c in range(cluster.n_clusters):
+                            members = labels == c
+                            if members.any():
+                                total[members] += l1_w * l1_mv[c]
+                        sim.pos = (old_pos + dt * total) % SPACE
+                    # else: pure L0 already applied by sim.step()
+                else:
+                    sim.step(reuse_neighbors=(reuse and sub > 0))
+                    if shadow_sim is not None:
+                        shadow_sim.step(reuse_neighbors=(reuse and sub > 0))
+                    if clust_on:
+                        cluster.step(sim.pos, sim.prefs, params)
         t_sim = time.perf_counter() - t0
 
         # ── Shadow divergence ──
@@ -1928,11 +1958,14 @@ def run():
                 if abs(v - params['cluster_centroid_alpha']) > 1e-15:
                     params['cluster_centroid_alpha'] = v
 
-                imgui.text("L1 physics (not yet applied)")
+                imgui.text("L1 physics")
                 _, v = imgui.drag_float("L1 weight", params['cluster_l1_weight'],
                                         0.01, 0.0, 5.0, "%.2f")
                 if abs(v - params['cluster_l1_weight']) > 1e-15:
                     params['cluster_l1_weight'] = v
+                _, v = imgui.drag_int("L1 n_neighbors", params['cluster_l1_n_neighbors'],
+                                      0.5, 1, 30)
+                params['cluster_l1_n_neighbors'] = v
 
         # Reset-required parameters
         if imgui.collapsing_header("Reset-Required Params"):

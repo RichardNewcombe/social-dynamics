@@ -168,6 +168,52 @@ class ClusterTracker:
             self.l1_centroids = np.zeros((0, 2), dtype=np.float64)
             self.l1_prefs = np.zeros((0, k), dtype=np.float32)
 
+    def compute_l1_movement(self, n_neighbors=5):
+        """Run L0-style per-dim best-neighbor physics on the L1 set.
+
+        Each L1 'particle' is a cluster's centroid + L1 pref vector.
+        Movement formula matches sim_2d_exp default (best_mode=0,
+        response=prefs, normalize_direction=True):
+
+            for ki in range(K):
+                best = argmax_j prefs_l1[j, ki]   over KNN of l1_pos
+                dir  = unit(periodic(l1_pos, l1_pos[best]))
+                compat = prefs_l1[self, ki] * prefs_l1[best, ki]
+                movement += compat * dir
+
+        Returns (n_clusters, 2) movement vectors. Caller distributes to
+        members via cluster_labels.
+        """
+        nc = self.n_clusters
+        if nc < 2:
+            return np.zeros((max(nc, 0), 2), dtype=np.float64)
+        L = SPACE
+        K = self.l1_prefs.shape[1]
+        n_nbrs = min(n_neighbors, nc - 1)
+
+        pos = (self.l1_centroids % L).astype(np.float64)
+        tree = cKDTree(pos, boxsize=L)
+        _, nbr_ids = tree.query(pos, k=n_nbrs + 1)
+        nbr_ids = np.clip(nbr_ids[:, 1:], 0, nc - 1)  # skip self
+
+        prefs = self.l1_prefs.astype(np.float64)
+        movement = np.zeros((nc, 2), dtype=np.float64)
+
+        for ki in range(K):
+            nbr_prefs_k = prefs[nbr_ids, ki]                      # (nc, n_nbrs)
+            best_local = np.argmax(nbr_prefs_k, axis=1)
+            best_global = nbr_ids[np.arange(nc), best_local]
+
+            delta = self._periodic_delta(self.l1_centroids,
+                                         self.l1_centroids[best_global], L)
+            dist = np.sqrt((delta ** 2).sum(axis=1, keepdims=True))
+            direction = delta / np.maximum(dist, 1e-12)
+
+            compat = prefs[:, ki] * prefs[best_global, ki]
+            movement += compat[:, None] * direction
+
+        return movement
+
     def get_marker_data(self):
         """Returns (positions_xy, colors_rgb) for L1 markers, ready for GPU upload.
 

@@ -127,6 +127,7 @@ params = dict(
     cluster_centroid_size_scale=4.0,  # marker size = point_size * scale
     cluster_centroid_alpha=0.55,   # marker alpha (lets L0 particles show)
     cluster_l1_weight=0.0,         # L1 movement contribution (0 = pure L0)
+    cluster_l1_n_neighbors=5,      # KNN count among L1 centroids
 )
 
 auto_scale_ref = dict(
