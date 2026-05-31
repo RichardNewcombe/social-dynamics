@@ -256,6 +256,46 @@ def _step_per_dim(pos, prefs, response, dir_matrix, nbr_ids, valid, L, k,
                     compat *= ip
                 mx += compat * new_dm[i, ki, 0]
                 my += compat * new_dm[i, ki, 1]
+            elif best_mode == 4:
+                # No Weight: uniform neighbor average — no max search.
+                # Identical to Boltzmann at β=0 (mean signal × mean direction).
+                cnt = 0
+                sig_sum = 0.0
+                dx_sum, dy_sum = 0.0, 0.0
+                for j in range(n_nbr):
+                    if not valid[i, j]:
+                        continue
+                    nj = nbr_ids[i, j]
+                    cnt += 1
+                    sig_sum += prefs[nj, ki]
+                    dx = pos[nj, 0] - pos[i, 0]
+                    dy = pos[nj, 1] - pos[i, 1]
+                    dx -= L * round(dx / L)
+                    dy -= L * round(dy / L)
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist > 1e-12:
+                        if normalize_direction:
+                            dx_sum += dx / dist
+                            dy_sum += dy / dist
+                        else:
+                            dx_sum += dx
+                            dy_sum += dy
+                if cnt > 0:
+                    dx_sum /= cnt
+                    dy_sum /= cnt
+                    sig_sum /= cnt
+                new_dm[i, ki, 0] = dir_memory * dir_matrix[i, ki, 0] + (1.0 - dir_memory) * dx_sum
+                new_dm[i, ki, 1] = dir_memory * dir_matrix[i, ki, 1] + (1.0 - dir_memory) * dy_sum
+                self_w = 1.0 if ignore_self_pref else response[i, ki]
+                compat = self_w * sig_sum
+                if pref_inner:
+                    ip = 0.0
+                    for di in range(k):
+                        ip += response[i, di] * prefs[i, di]
+                    ip /= k
+                    compat *= ip
+                mx += compat * new_dm[i, ki, 0]
+                my += compat * new_dm[i, ki, 1]
             else:
                 best_val = -1e30
                 best_nj = -1

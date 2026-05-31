@@ -105,6 +105,15 @@ class Simulation:
         self._pos_delay_idx = 0  # current write index
         self.pos_history = self.pos.copy()  # the "historical" position (EMA or delayed)
 
+        # Snapshot of the exact initial arrays, so a saved "discovery" can be
+        # reproduced bit-for-bit even when use_seed is off (non-deterministic init).
+        self._initial_state = dict(
+            pos=self.pos.copy(),
+            prefs=self.prefs.copy(),
+            response=self.response.copy(),
+            dir_matrix=self.dir_matrix.copy(),
+        )
+
     # ── Initialisation helpers ──────────────────────────────────────
 
     def _init_positions(self, dist):
@@ -1250,6 +1259,16 @@ class Simulation:
             self.step_count += 1
             return
 
+        if best_mode == 4:
+            # No Weight: uniform neighbor average — no max/softmax/argmax search.
+            # Direction is identical across channels, so precompute once.
+            if has_mask:
+                nw_w = valid / n_valid[:, None]
+            else:
+                n_nbr = nbr_ids.shape[1]
+                nw_w = np.full((n, n_nbr), 1.0 / n_nbr, dtype=toward_unit.dtype)
+            nw_dir = (nw_w[:, :, None] * toward_unit).sum(axis=1)  # (N, 2)
+
         for ki in range(k):
             nbr_pref_k = prefs[nbr_ids, ki]
 
@@ -1274,7 +1293,12 @@ class Simulation:
                 log_weights = beta * nbr_pref_k
                 if has_mask:
                     log_weights = np.where(valid, log_weights, -np.inf)
-                log_weights -= log_weights.max(axis=1, keepdims=True)
+                # Rows with no valid neighbor (radius mode) are all -inf;
+                # force their max to 0 to avoid -inf - (-inf) = NaN. Their
+                # weights then collapse to 0, contributing no movement.
+                row_max = log_weights.max(axis=1, keepdims=True)
+                row_max = np.where(np.isfinite(row_max), row_max, 0.0)
+                log_weights -= row_max
                 weights = np.exp(log_weights)
                 w_sum = weights.sum(axis=1, keepdims=True)
                 w_sum = np.maximum(w_sum, 1e-30)
@@ -1286,6 +1310,18 @@ class Simulation:
                 weighted_sig = (weights * nbr_pref_k).sum(axis=1)  # (N,)
 
                 dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * avg_dir
+                self_w = np.ones(n, dtype=resp.dtype) if params['ignore_self_pref'] else resp[:, ki]
+                compat = self_w * weighted_sig
+                if pref_inner:
+                    full_compat = (resp * prefs).sum(axis=1) / k
+                    compat = compat * full_compat
+                movement += compat[:, None] * dm[:, ki, :]
+
+            elif best_mode == 4:
+                # No Weight: uniform mean of neighbor signal × shared mean
+                # direction. Identical to Boltzmann at β=0, no exp/max search.
+                weighted_sig = (nw_w * nbr_pref_k).sum(axis=1)  # (N,)
+                dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * nw_dir
                 self_w = np.ones(n, dtype=resp.dtype) if params['ignore_self_pref'] else resp[:, ki]
                 compat = self_w * weighted_sig
                 if pref_inner:

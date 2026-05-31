@@ -15,6 +15,7 @@ venv/
 .claude/
 sim_output.png
 default.profraw
+sim_2d_exp/discoveries/
 
 # Legacy files (preserved in archive-all branch)
 sim_gpu*.py

@@ -4,6 +4,7 @@ GLFW / moderngl / imgui renderer and main loop for the 2D particle simulation.
 
 import os
 import time
+import json
 import subprocess
 import ctypes
 import numpy as np
@@ -493,6 +494,73 @@ def run():
             rec_frame_count += 1
         except BrokenPipeError:
             stop_recording()
+
+    # ── Discoveries (save interesting states) ──
+    discovery_desc = ""          # user's description text buffer
+    discovery_status = ""        # last-save status message
+    pending_snapshot = None      # path to write the panel PNG on the next rendered frame
+
+    def _json_safe(d):
+        """Coerce a params dict into JSON-serializable Python types."""
+        out = {}
+        for kk, vv in d.items():
+            if isinstance(vv, np.integer):
+                out[kk] = int(vv)
+            elif isinstance(vv, np.floating):
+                out[kk] = float(vv)
+            elif isinstance(vv, np.bool_):
+                out[kk] = bool(vv)
+            elif isinstance(vv, np.ndarray):
+                out[kk] = vv.tolist()
+            else:
+                out[kk] = vv
+        return out
+
+    def save_discovery():
+        """Save config + description + initial state + a panel snapshot to
+        a new timestamped folder under ./discoveries/."""
+        nonlocal discovery_status, pending_snapshot
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        base = os.path.join(os.path.dirname(__file__) or ".", "discoveries")
+        folder = os.path.join(base, ts)
+        os.makedirs(folder, exist_ok=True)
+
+        # 1. config.json — full params (initial-condition recipe) + metadata
+        config = {
+            "meta": {
+                "timestamp": ts,
+                "step_count": int(sim.step_count),
+                "n": int(sim.n),
+                "k": int(sim.k),
+                "physics_engine": params['physics_engine'],
+                "torch_device": _TORCH_DEVICE if _HAS_TORCH else "cpu",
+                "description": discovery_desc.strip(),
+            },
+            "params": _json_safe(params),
+        }
+        with open(os.path.join(folder, "config.json"), "w") as f:
+            json.dump(config, f, indent=2, default=str)
+
+        # 2. description.txt — human-readable note
+        with open(os.path.join(folder, "description.txt"), "w") as f:
+            f.write(discovery_desc.strip() + "\n")
+
+        # 3. initial_state.npz — exact arrays for bit-for-bit reproduction
+        st = getattr(sim, "_initial_state", None)
+        if st is not None:
+            np.savez_compressed(os.path.join(folder, "initial_state.npz"), **st)
+
+        # 4. snapshot.png — deferred until the frame is fully rendered
+        pending_snapshot = os.path.join(folder, "snapshot.png")
+        discovery_status = f"Saved: discoveries/{ts}"
+        print(f"[discovery] {discovery_status}  (step {sim.step_count})")
+
+    def write_snapshot(path):
+        """Read the current framebuffer (both panels + overlay) to a PNG."""
+        data = _GL.glReadPixels(0, 0, fb_w, fb_h, _GL.GL_RGB, _GL.GL_UNSIGNED_BYTE)
+        arr = np.frombuffer(data, dtype=np.uint8).reshape(fb_h, fb_w, 3)[::-1]
+        from PIL import Image
+        Image.fromarray(arr).save(path)
 
     def rebuild_buffers():
         nonlocal vbo_pos, vbo_col, vbo_vel_col, vao_particle, vao_splat, vao_vel_splat
@@ -1465,7 +1533,7 @@ def run():
                                f"REC  {rec_frame_count}f  {video_duration:.1f}s video")
             if imgui.button("Stop Rec", imgui.ImVec2(80, 0)):
                 stop_recording()
-        else:
+        elif imgui.collapsing_header("Recording / Video"):
             changed, v = imgui.drag_int("Video FPS", rec_fps, 0.5, 1, 120)
             if changed:
                 rec_fps = v
@@ -1495,6 +1563,23 @@ def run():
                 rec_view = v
             if imgui.button("Record", imgui.ImVec2(80, 0)):
                 start_recording()
+        imgui.separator()
+
+        # ── Save discovery ──
+        if imgui.collapsing_header("Discoveries"):
+            imgui.text_colored(imgui.ImVec4(0.6, 0.6, 0.6, 1.0),
+                               "Notes (Enter = new line):")
+            changed, v = imgui.input_text_multiline(
+                "##discovery_desc", discovery_desc, imgui.ImVec2(-1, 80),
+                imgui.InputTextFlags_.allow_tab_input.value)
+            if changed:
+                discovery_desc = v
+            if imgui.button("Save State", imgui.ImVec2(120, 0)):
+                save_discovery()
+            if discovery_status:
+                imgui.same_line()
+                imgui.text_colored(imgui.ImVec4(0.5, 0.85, 0.5, 1.0),
+                                   discovery_status)
         imgui.separator()
 
         # Right panel view selector
@@ -2037,6 +2122,15 @@ def run():
         # Recording: capture every frame
         if rec_process is not None:
             capture_frame()
+
+        # Discovery snapshot: write once the frame is fully rendered
+        if pending_snapshot is not None:
+            try:
+                write_snapshot(pending_snapshot)
+            except Exception as e:
+                discovery_status = f"Snapshot failed: {e}"
+                print(f"[discovery] {discovery_status}")
+            pending_snapshot = None
 
         # Swap and FPS
         glfw.swap_buffers(window)

@@ -153,6 +153,17 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
 
     # Per-dimension mode
     arange_n = torch.arange(n, device=device)
+
+    if best_mode == 4:
+        # No Weight: uniform neighbor average — no max/softmax/argmax search.
+        # Direction is the same across channels, so precompute once.
+        if has_mask:
+            nw_w = valid.to(dtype) / n_valid.unsqueeze(1)
+        else:
+            n_nbr = nbr_ids.shape[1]
+            nw_w = torch.full((n, n_nbr), 1.0 / n_nbr, dtype=dtype, device=device)
+        nw_dir = (nw_w.unsqueeze(2) * toward_unit).sum(dim=1)  # (N, 2)
+
     for ki in range(k):
         nbr_pref_k = prefs[nbr_ids, ki]
 
@@ -177,7 +188,13 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
             if has_mask:
                 log_w = torch.where(valid, log_w,
                     torch.tensor(float('-inf'), dtype=log_w.dtype, device=device))
-            log_w = log_w - log_w.max(dim=1, keepdim=True).values
+            # Rows with no valid neighbor (radius mode) have an all -inf row;
+            # forcing their max to 0 avoids -inf - (-inf) = NaN. Their weights
+            # then collapse to 0, so they contribute no movement.
+            row_max = log_w.max(dim=1, keepdim=True).values
+            row_max = torch.where(torch.isfinite(row_max), row_max,
+                                  torch.zeros_like(row_max))
+            log_w = log_w - row_max
             w = torch.exp(log_w)
             w_sum = w.sum(dim=1, keepdim=True).clamp(min=1e-30)
             w = w / w_sum
@@ -188,6 +205,18 @@ def step_torch(pos_np, prefs_np, response_np, dm_np, nbr_ids_np, valid_np,
             weighted_sig = (w * nbr_pref_k).sum(dim=1)  # (N,)
 
             dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * avg_dir
+            self_w = torch.ones(n, dtype=resp.dtype, device=device) if ignore_self_pref else resp[:, ki]
+            compat = self_w * weighted_sig
+            if pref_inner:
+                full_compat = (resp * prefs).sum(dim=1) / k
+                compat = compat * full_compat
+            movement = movement + compat.unsqueeze(1) * dm[:, ki, :]
+
+        elif best_mode == 4:
+            # No Weight: uniform mean of neighbor signal × shared mean direction.
+            # Identical to Boltzmann at β=0, but with no exp/max search.
+            weighted_sig = (nw_w * nbr_pref_k).sum(dim=1)  # (N,)
+            dm[:, ki, :] = dir_memory * dm[:, ki, :] + (1.0 - dir_memory) * nw_dir
             self_w = torch.ones(n, dtype=resp.dtype, device=device) if ignore_self_pref else resp[:, ki]
             compat = self_w * weighted_sig
             if pref_inner:

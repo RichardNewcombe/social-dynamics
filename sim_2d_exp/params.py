@@ -10,7 +10,8 @@ SPACE = 1.0
 POS_DISTS = ["Uniform", "Gaussian"]
 PREF_DISTS = ["Uniform [-1,1]", "Gaussian", "Sparse ±1", "Unit Normalized",
               "Binary d0 + noise"]
-BEST_MODES = ["Default", "Max Magnitude", "Same-Sign Max Mag", "Boltzmann Softmax"]
+BEST_MODES = ["Default", "Max Magnitude", "Same-Sign Max Mag", "Boltzmann Softmax",
+              "No Weight"]
 SOCIAL_MODES = ["Uniform", "Quiet-Dim Diff"]
 VIS_PREF_SOURCES = ["Signal", "Response"]
 PREF_COLOR_MODES = ["RGB", "Dim2 Heat", "HSV"]
@@ -34,7 +35,7 @@ params = dict(
     pref_inner_prod=False,
     inner_prod_avg=False,
     pref_dist_weight=False,
-    best_mode=0,            # 0=Default, 1=Max Magnitude, 2=Same-Sign, 3=Boltzmann
+    best_mode=0,            # 0=Default, 1=Max Magnitude, 2=Same-Sign, 3=Boltzmann, 4=No Weight
     boltzmann_beta=5.0,     # temperature for Boltzmann softmax (0=mean, ∞=max)
     ignore_self_pref=False, # set self-preference weight to 1 in compatibility
     pref_power=1.0,         # raise |pref| to this power (1=linear, >1=sharpen, <1=flatten, 0=sign only)
