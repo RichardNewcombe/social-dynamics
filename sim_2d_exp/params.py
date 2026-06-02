@@ -28,6 +28,8 @@ params = dict(
     steps_per_frame=1,
     repulsion=0.0,
     dir_memory=0.0,
+    static_fraction=0.0,    # fraction [0,1] of particles held fixed (no position update);
+                            # they still act as neighbors and update prefs normally
     social=0.0,
     social_mode=0,          # 0=Uniform, 1=Quiet-Dim Differentiation
     social_dist_weight=False,

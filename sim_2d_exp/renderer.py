@@ -499,6 +499,9 @@ def run():
     discovery_desc = ""          # user's description text buffer
     discovery_status = ""        # last-save status message
     pending_snapshot = None      # path to write the panel PNG on the next rendered frame
+    discovery_list = None        # list of folder paths (None = not scanned yet)
+    discovery_labels = []        # display labels parallel to discovery_list
+    discovery_sel = 0            # selected index in the load dropdown
 
     def _json_safe(d):
         """Coerce a params dict into JSON-serializable Python types."""
@@ -554,6 +557,7 @@ def run():
         pending_snapshot = os.path.join(folder, "snapshot.png")
         discovery_status = f"Saved: discoveries/{ts}"
         print(f"[discovery] {discovery_status}  (step {sim.step_count})")
+        refresh_discovery_list()
 
     def write_snapshot(path):
         """Read the current framebuffer (both panels + overlay) to a PNG."""
@@ -561,6 +565,84 @@ def run():
         arr = np.frombuffer(data, dtype=np.uint8).reshape(fb_h, fb_w, 3)[::-1]
         from PIL import Image
         Image.fromarray(arr).save(path)
+
+    def refresh_discovery_list():
+        """Scan ./discoveries/ for saved runs (newest first)."""
+        nonlocal discovery_list, discovery_labels, discovery_sel
+        base = os.path.join(os.path.dirname(__file__) or ".", "discoveries")
+        folders, labels = [], []
+        if os.path.isdir(base):
+            for name in sorted(os.listdir(base), reverse=True):
+                folder = os.path.join(base, name)
+                if not os.path.isdir(folder):
+                    continue
+                if not os.path.isfile(os.path.join(folder, "config.json")):
+                    continue
+                first = ""
+                dpath = os.path.join(folder, "description.txt")
+                if os.path.isfile(dpath):
+                    try:
+                        with open(dpath) as f:
+                            first = f.readline().strip()
+                    except OSError:
+                        pass
+                folders.append(folder)
+                labels.append(name if not first else f"{name}  -  {first[:48]}")
+        discovery_list = folders
+        discovery_labels = labels
+        if discovery_sel >= len(folders):
+            discovery_sel = max(0, len(folders) - 1)
+
+    def load_discovery(folder):
+        """Load a saved discovery: apply its params, restore its exact initial
+        state, reset, and pause so it can be played back from the start."""
+        nonlocal discovery_desc, discovery_status, running_sim
+        try:
+            with open(os.path.join(folder, "config.json")) as f:
+                config = json.load(f)
+        except (OSError, ValueError) as e:
+            discovery_status = f"Load failed: {e}"
+            print(f"[discovery] {discovery_status}")
+            return
+        params.update(config.get("params", {}))
+
+        # Description into the notes box
+        dpath = os.path.join(folder, "description.txt")
+        if os.path.isfile(dpath):
+            try:
+                with open(dpath) as f:
+                    discovery_desc = f.read().strip()
+            except OSError:
+                pass
+
+        # Rebuild sim/buffers from the loaded params
+        do_reset()
+
+        # Restore exact initial arrays (bit-for-bit), if present
+        npz_path = os.path.join(folder, "initial_state.npz")
+        if os.path.isfile(npz_path):
+            st = np.load(npz_path)
+            sim.pos = st["pos"].astype(sim.pos.dtype)
+            sim.prefs = st["prefs"].astype(sim._pref_dtype)
+            sim.response = st["response"].astype(sim._pref_dtype)
+            sim.dir_matrix = st["dir_matrix"].astype(sim.dir_matrix.dtype)
+            sim._initial_state = {kk: st[kk].copy() for kk in st.files}
+            # Restore the exact anchored set so playback is bit-for-bit, even
+            # when the discovery was saved with use_seed off.
+            if "static_mask" in st.files:
+                sm = st["static_mask"].astype(bool)
+                sim.static_mask = sm if sm.any() else None
+                sim._static_fraction_cached = params.get('static_fraction', 0.0)
+            sim.step_count = 0
+            sim.nbr_ids = None
+            sim._valid_mask = None
+            sim.pos_ema = sim.pos.copy()
+            sim.pos_history = sim.pos.copy()
+            sim.pos_velocity = np.zeros_like(sim.pos)
+
+        running_sim = False  # load paused for playback control
+        discovery_status = f"Loaded: {os.path.basename(folder)}"
+        print(f"[discovery] {discovery_status}")
 
     def rebuild_buffers():
         nonlocal vbo_pos, vbo_col, vbo_vel_col, vao_particle, vao_splat, vao_vel_splat
@@ -655,7 +737,8 @@ def run():
                     pmem_trail_fbo, pmem_trail_fbo2):
             fbo.use()
             ctx.clear(0, 0, 0)
-        running_sim = True
+        # Note: running_sim is intentionally preserved, so Reset keeps the
+        # current play/pause state (resetting while paused stays paused).
 
     def reset_view():
         nonlocal view_zoom
@@ -1580,6 +1663,37 @@ def run():
                 imgui.same_line()
                 imgui.text_colored(imgui.ImVec4(0.5, 0.85, 0.5, 1.0),
                                    discovery_status)
+
+            # ── Load a saved discovery ──
+            imgui.separator()
+            if discovery_list is None:
+                refresh_discovery_list()
+            imgui.text_colored(imgui.ImVec4(0.6, 0.6, 0.6, 1.0), "Load discovery:")
+            if discovery_list:
+                if discovery_sel >= len(discovery_list):
+                    discovery_sel = len(discovery_list) - 1
+                changed, discovery_sel = imgui.combo(
+                    "##disc_list", discovery_sel, discovery_labels)
+                if changed and 0 <= discovery_sel < len(discovery_list):
+                    # Show the selected discovery's description in the box
+                    dpath = os.path.join(discovery_list[discovery_sel],
+                                         "description.txt")
+                    if os.path.isfile(dpath):
+                        try:
+                            with open(dpath) as f:
+                                discovery_desc = f.read().strip()
+                        except OSError:
+                            pass
+                if imgui.button("Load", imgui.ImVec2(120, 0)):
+                    load_discovery(discovery_list[discovery_sel])
+                imgui.same_line()
+                if imgui.button("Refresh", imgui.ImVec2(80, 0)):
+                    refresh_discovery_list()
+            else:
+                imgui.text_disabled("(no saved discoveries)")
+                imgui.same_line()
+                if imgui.button("Refresh", imgui.ImVec2(80, 0)):
+                    refresh_discovery_list()
         imgui.separator()
 
         # Right panel view selector
@@ -1709,6 +1823,13 @@ def run():
             changed, v = imgui.drag_float("Dir Memory", params['dir_memory'], 0.005, 0.0, 0.99, "%.10g")
             if changed and abs(v - params['dir_memory']) > 1e-15:
                 params['dir_memory'] = v
+            changed, v = imgui.drag_float("Static %", params['static_fraction'] * 100.0,
+                                          0.5, 0.0, 100.0, "%.1f%%")
+            if changed:
+                params['static_fraction'] = min(max(v / 100.0, 0.0), 1.0)
+            n_fixed = int(sim.static_mask.sum()) if sim.static_mask is not None else 0
+            imgui.same_line()
+            imgui.text_colored(imgui.ImVec4(0.5, 0.5, 0.5, 1.0), f"{n_fixed} fixed")
             changed, v = imgui.drag_float("Social", params['social'], 0.0001, -0.01, 0.01, "%.10g")
             if changed and abs(v - params['social']) > 1e-15:
                 params['social'] = v

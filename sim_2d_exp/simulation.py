@@ -105,6 +105,12 @@ class Simulation:
         self._pos_delay_idx = 0  # current write index
         self.pos_history = self.pos.copy()  # the "historical" position (EMA or delayed)
 
+        # Static (anchored) particles: held fixed while still participating in
+        # all other dynamics (neighbours, signal influence, pref/social updates).
+        self.static_mask = None
+        self._static_fraction_cached = -1.0
+        self._update_static_mask()
+
         # Snapshot of the exact initial arrays, so a saved "discovery" can be
         # reproduced bit-for-bit even when use_seed is off (non-deterministic init).
         self._initial_state = dict(
@@ -112,7 +118,26 @@ class Simulation:
             prefs=self.prefs.copy(),
             response=self.response.copy(),
             dir_matrix=self.dir_matrix.copy(),
+            static_mask=(self.static_mask.copy() if self.static_mask is not None
+                         else np.zeros(n, dtype=bool)),
         )
+
+    def _update_static_mask(self):
+        """(Re)build the boolean mask of anchored particles from
+        params['static_fraction']. Selection is seeded so it's reproducible."""
+        frac = min(max(float(params.get('static_fraction', 0.0)), 0.0), 1.0)
+        self._static_fraction_cached = frac
+        n = self.n
+        n_static = int(round(frac * n))
+        if n_static <= 0:
+            self.static_mask = None
+            return
+        n_static = min(n_static, n)
+        rng = np.random.default_rng(params['seed'] if params['use_seed'] else None)
+        idx = rng.choice(n, size=n_static, replace=False)
+        mask = np.zeros(n, dtype=bool)
+        mask[idx] = True
+        self.static_mask = mask
 
     # ── Initialisation helpers ──────────────────────────────────────
 
@@ -599,6 +624,12 @@ class Simulation:
 
     def step(self, reuse_neighbors=False):
         """Run one simulation step (neighbor find + physics + post-processing)."""
+        # ── Static (anchored) particles: snapshot positions to restore later ──
+        if params.get('static_fraction', 0.0) != self._static_fraction_cached:
+            self._update_static_mask()
+        static_mask = self.static_mask
+        static_pos = self.pos[static_mask].copy() if static_mask is not None else None
+
         # ── Position history: optionally modify position for physics ──
         pos_real = None
         hist_mode = params['pos_history_mode'] if params['pos_history_enabled'] else 0
@@ -967,6 +998,16 @@ class Simulation:
             step_size = params['step_size']
             self.pos = (self.pos + vel_align * step_size * force) % SPACE
             self._movement += vel_align * force
+
+        # ── Static particles: restore their fixed positions (no movement) ──
+        # All other dynamics already ran; we only undo their position change.
+        if static_mask is not None and static_pos is not None:
+            self.pos[static_mask] = static_pos
+            self._movement[static_mask] = 0.0
+            if params['pos_history_enabled']:
+                self.pos_velocity[static_mask] = 0.0
+                self.pos_history[static_mask] = static_pos
+                self.pos_ema[static_mask] = static_pos
 
         # ── Recompute Delaunay visualization from post-step positions ──
         if params['neighbor_mode'] == 3 and params['show_neighbors']:
