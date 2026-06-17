@@ -143,3 +143,67 @@ void main() {
     fragColor = line_color;
 }
 '''
+
+# ── Mesh shaders for mountain surfaces ──────────────────────────────
+
+MESH_VERT = '''
+#version 410 core
+in vec3 in_pos;
+in vec3 in_normal;
+in vec3 in_color;
+out vec3 v_color;
+out vec3 v_normal;
+out vec3 v_world_pos;
+uniform mat4 mvp;
+
+void main() {
+    gl_Position = mvp * vec4(in_pos, 1.0);
+    v_color = in_color;
+    v_normal = in_normal;
+    v_world_pos = in_pos;
+}
+'''
+
+MESH_FRAG = '''
+#version 410 core
+in vec3 v_color;
+in vec3 v_normal;
+in vec3 v_world_pos;
+out vec4 fragColor;
+uniform float alpha;
+uniform vec3 light_dir;
+
+void main() {
+    vec3 n = normalize(v_normal);
+    vec3 l = normalize(light_dir);
+    float diffuse = max(dot(n, l), 0.0);
+    float ambient = 0.3;
+    vec3 lit = v_color * (ambient + 0.7 * diffuse);
+    fragColor = vec4(lit, alpha);
+}
+'''
+
+# Ghost wireframe uses the same LINE_VERT/LINE_FRAG with per-vertex color
+GHOST_VERT = '''
+#version 410 core
+in vec3 in_pos;
+in vec3 in_color;
+out vec3 v_color;
+uniform mat4 mvp;
+
+void main() {
+    gl_Position = mvp * vec4(in_pos, 1.0);
+    v_color = in_color;
+}
+'''
+
+GHOST_FRAG = '''
+#version 410 core
+in vec3 v_color;
+out vec4 fragColor;
+uniform float alpha;
+
+void main() {
+    fragColor = vec4(v_color, alpha);
+}
+'''
